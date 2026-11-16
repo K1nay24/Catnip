@@ -2,7 +2,11 @@ name: Build Catnip
 
 on:
   push:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -55,6 +59,17 @@ jobs:
           cp -R dist/Catnip-macOS/Catnip.component ~/Library/Audio/Plug-Ins/Components/
           killall -9 AudioComponentRegistrar || true
           auval -v aumu Ctnp Kina
+
+      - name: Publish macOS build to branch mac-build
+        if: runner.os == 'macOS' && github.ref == 'refs/heads/main'
+        run: |
+          cd dist/Catnip-macOS
+          git init -q -b mac-build
+          git config user.name "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -qm "macOS build ${{ github.sha }}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" mac-build
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
