@@ -10,10 +10,13 @@ Sample reinziehen → Catnip erkennt die Transienten und legt automatisch 16 (od
 |---|---|
 | Sample laden | Datei aufs Plugin ziehen, oder Ordner-Symbol oben rechts (WAV, AIFF, MP3, FLAC, OGG) |
 | Chops | Automatisch nach Transienten. **GRID** = gleich lange Stücke. **8 / 16** = Anzahl |
+| Zoom (großes Rad) | Rad drehen = ins Sample hineinzoomen; die Chops werden nur im sichtbaren Ausschnitt neu gesetzt. Gezoomt wird um den gewählten Chop. Doppelklick = ganzes Sample |
+| Ausschnitt verschieben | In der Übersichtsleiste unten im Display klicken/ziehen, oder über dem Display scrollen |
 | Chop-Grenze verschieben | Im Display auf eine gestrichelte Linie zeigen und ziehen |
 | Chop anhören | Im Display auf den Chop klicken oder Pad klicken |
 | Tastatur | `1 2 3 4` = Pad 13–16 · `Q W E R` = Pad 9–12 · `A S D F` = Pad 5–8 · `Y/Z X C V` = Pad 1–4 |
 | MIDI | Pad 1 = Note 36 (C1), chromatisch aufwärts bis Pad 16 |
+| Abspielen | Ein neuer Chop schneidet den vorherigen ab – Chops überlappen nie |
 | Pro Chop | PITCH (±12 Halbtöne), DECAY (wie viel vom Chop spielt), LEVEL, REVERSE, ONE-SHOT/GATE. Doppelklick auf einen Regler = zurücksetzen |
 | In die DAW | Den Button **CHOPS ZUR DAW ZIEHEN** in die Spur ziehen – alle Chops landen als einzelne WAVs |
 | Größe | Fenster unten rechts ziehen (75–200 %) |

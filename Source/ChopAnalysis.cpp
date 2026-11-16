@@ -96,8 +96,8 @@ namespace catnip
         }
 
         std::sort (a.onsets.begin(), a.onsets.end(), [] (const Onset& x, const Onset& y) { return x.strength > y.strength; });
-        if (a.onsets.size() > 400)
-            a.onsets.resize (400);
+        if (a.onsets.size() > 5000)   // plenty, so zoomed-in windows still find their own transients
+            a.onsets.resize (5000);
         return a;
     }
 

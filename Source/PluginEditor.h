@@ -38,6 +38,13 @@ namespace catnip
         juce::Typeface::Ptr vt, reg, semi, xbold;
     };
 
+    class WheelLookAndFeel final : public juce::LookAndFeel_V4
+    {
+    public:
+        void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos,
+                               float startAngle, float endAngle, juce::Slider&) override;
+    };
+
     class KnobLookAndFeel final : public juce::LookAndFeel_V4
     {
     public:
@@ -62,6 +69,7 @@ public:
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
     void loadFile (const juce::File&);
     void openFileChooser();
@@ -75,11 +83,17 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void timerCallback() override;
     void syncKnobs();
+    void applyZoom();
+    double maxZoom() const;
+    juce::int64 selectedChopCentre() const;
+    void centreViewAt (float x);
+    const std::vector<float>& viewPeaks (const catnip::SampleData&, juce::int64 start, juce::int64 length);
     void selectChop (int chop);
 
     // layout helpers (all in view coordinates)
     juce::Rectangle<float> lcdArea() const       { return { 20.0f, 72.0f, 920.0f, 232.0f }; }
-    juce::Rectangle<float> waveArea() const      { return { 39.0f, 115.0f, 882.0f, 150.0f }; }
+    juce::Rectangle<float> waveArea() const      { return { 39.0f, 115.0f, 882.0f, 134.0f }; }
+    juce::Rectangle<float> minimapArea() const   { return { 39.0f, 255.0f, 882.0f, 10.0f }; }
     juce::Rectangle<float> padCell (int vis) const;
     juce::Rectangle<float> padRect (int vis) const { return padCell (vis).withTrimmedTop (18.0f); }
     juce::Rectangle<float> folderButton() const  { return { 900.0f, 8.0f, 40.0f, 40.0f }; }
@@ -102,7 +116,14 @@ private:
 
     CatnipProcessor& proc;
     catnip::KnobLookAndFeel knobLook;
-    juce::Slider pitch, decay, level;
+    catnip::WheelLookAndFeel wheelLook;
+    juce::Slider pitch, decay, level, zoom;
+    juce::int64 zoomAnchor = -1;
+    std::array<bool, catnip::maxChops> held {};
+    const catnip::SampleData* cachedSample = nullptr;
+    juce::int64 cachedStart = -1, cachedLength = -1;
+    std::vector<float> cachedPeaks;
+    bool draggingMinimap = false;
     juce::Image mascot;
     std::unique_ptr<juce::FileChooser> chooser;
 
@@ -124,6 +145,7 @@ public:
 
     void paint (juce::Graphics&) override {}
     void resized() override;
+    void parentHierarchyChanged() override;
 
     bool keyPressed (const juce::KeyPress&) override;
     bool keyStateChanged (bool isKeyDown) override;

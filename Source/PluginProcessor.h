@@ -69,6 +69,11 @@ public:
     std::vector<juce::int64> getBounds() const;
     void setBound (int index, juce::int64 position);
 
+    /** The zoom window: chops are only placed inside [start, start + length). */
+    std::pair<juce::int64, juce::int64> getView() const;
+    void setView (juce::int64 start, juce::int64 length);
+    juce::int64 minViewLength() const;
+
     int getChopCount() const noexcept { return chopCount.load(); }
     void setChopCount (int newCount);
     bool isGridMode() const noexcept { return gridMode.load(); }
@@ -80,6 +85,9 @@ public:
 
     juce::String getMissingFileName() const { return missingFile; }
 
+    /** Voices that are sounding and not fading out (for tests). Audio-thread state, so only call when no audio runs. */
+    int getActiveVoiceCount() const noexcept;
+
     juce::MidiKeyboardState keyboardState;
     std::array<std::atomic<int>, catnip::maxChops> hitCounters {};
     std::atomic<int> selectedChop { 0 };
@@ -89,6 +97,7 @@ private:
     struct Voice
     {
         bool active = false, releasing = false, reverse = false;
+        int chop = -1;
         juce::int64 start = 0, end = 0;
         double played = 0.0, total = 0.0, increment = 1.0, fadeLen = 1.0;
         float gain = 0.0f, attack = 0.0f, attackStep = 1.0f, release = 1.0f, releaseStep = 0.0f;
@@ -104,8 +113,9 @@ private:
     mutable juce::SpinLock lock;
     std::shared_ptr<catnip::SampleData> sample;
     std::vector<juce::int64> bounds;
+    juce::int64 viewStart = 0, viewLength = 0;
     std::array<catnip::ChopParams, catnip::maxChops> chops;
-    std::array<Voice, catnip::maxChops> voices;
+    std::array<Voice, 8> voices;   // one sounding chop at a time; extra slots only hold fade-outs
 
     std::atomic<int> chopCount { 16 };
     std::atomic<bool> gridMode { false };

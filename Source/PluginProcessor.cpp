@@ -38,14 +38,36 @@ void CatnipProcessor::startVoice (int chop, float velocity)
     if (sample == nullptr || chop < 0 || chop >= chopCount.load() || chop + 1 >= (int) bounds.size())
         return;
 
-    auto& p = chops[(size_t) chop];
-    auto& v = voices[(size_t) chop];
-
-    v.start = bounds[(size_t) chop];
-    v.end = bounds[(size_t) chop + 1];
-    const auto len = (double) (v.end - v.start);
+    const auto start = bounds[(size_t) chop];
+    const auto end = bounds[(size_t) chop + 1];
+    const auto len = (double) (end - start);
     if (len < 2.0) return;
 
+    // Choke: a new chop cuts every sound that is still playing (4 ms fade, no click, no overlap).
+    const auto chokeStep = (float) (1.0 / std::max (1.0, hostRate * 0.004));
+    for (auto& other : voices)
+        if (other.active && ! (other.releasing && other.releaseStep >= chokeStep))
+        {
+            other.releasing = true;
+            other.releaseStep = chokeStep;
+        }
+
+    // take a free voice; if all are still fading, reuse the one closest to silence
+    Voice* slot = nullptr;
+    for (auto& candidate : voices)
+        if (! candidate.active) { slot = &candidate; break; }
+    if (slot == nullptr)
+    {
+        slot = &voices[0];
+        for (auto& candidate : voices)
+            if (candidate.release < slot->release) slot = &candidate;
+    }
+
+    auto& p = chops[(size_t) chop];
+    auto& v = *slot;
+    v.chop = chop;
+    v.start = start;
+    v.end = end;
     v.reverse = p.reverse.load();
     v.total = len * juce::jlimit (0.05, 1.0, (double) p.decay.load());
     v.increment = (sample->sampleRate / hostRate) * std::pow (2.0, p.pitch.load() / 12.0);
@@ -58,6 +80,7 @@ void CatnipProcessor::startVoice (int chop, float velocity)
     v.attack = 0.0f;
     v.attackStep = (float) (1.0 / std::max (1.0, hostRate * 0.002));
     v.release = 1.0f;
+    v.releaseStep = 0.0f;
     v.releasing = false;
     v.active = true;
 
@@ -66,13 +89,21 @@ void CatnipProcessor::startVoice (int chop, float velocity)
 
 void CatnipProcessor::stopVoice (int chop)
 {
-    if (chop < 0 || chop >= maxChops) return;
-    auto& v = voices[(size_t) chop];
-    if (v.active && chops[(size_t) chop].gate.load())
-    {
-        v.releasing = true;
-        v.releaseStep = (float) (1.0 / std::max (1.0, hostRate * 0.015));
-    }
+    if (chop < 0 || chop >= maxChops || ! chops[(size_t) chop].gate.load()) return;
+    for (auto& v : voices)
+        if (v.active && v.chop == chop && ! v.releasing)
+        {
+            v.releasing = true;
+            v.releaseStep = (float) (1.0 / std::max (1.0, hostRate * 0.015));
+        }
+}
+
+int CatnipProcessor::getActiveVoiceCount() const noexcept
+{
+    int n = 0;
+    for (auto& v : voices)
+        if (v.active && ! v.releasing) ++n;
+    return n;
 }
 
 void CatnipProcessor::renderVoices (juce::AudioBuffer<float>& out, int startSample, int numSamples)
@@ -161,12 +192,64 @@ void CatnipProcessor::rechop()
 {
     if (sample == nullptr) { bounds.clear(); return; }
     const juce::int64 len = sample->buffer.getNumSamples();
+    if (viewLength <= 0 || viewLength > len) viewLength = len;
+    viewStart = juce::jlimit<juce::int64> (0, len - viewLength, viewStart);
+
+    const auto a = viewStart, windowLen = viewLength;
     const int count = chopCount.load();
-    bounds = gridMode.load() ? gridBounds (len, count)
-                             : transientBounds (sample->analysis.onsets, len, count);
+
+    if (gridMode.load())
+    {
+        bounds = gridBounds (windowLen, count);
+    }
+    else
+    {
+        // only the transients inside the visible window, relative to its start
+        std::vector<Onset> local;
+        for (const auto& o : sample->analysis.onsets)
+            if (o.sample > a && o.sample < a + windowLen)
+                local.push_back ({ o.sample - a, o.strength });
+        bounds = transientBounds (local, windowLen, count);
+    }
+    for (auto& b : bounds) b += a;
     if (! gridMode.load())
         snapToZeroCrossings (bounds, sample->buffer);
-    for (auto& v : voices) v.active = false;
+
+    // fade out whatever is playing instead of cutting it hard
+    for (auto& v : voices)
+        if (v.active) { v.releasing = true; v.releaseStep = (float) (1.0 / std::max (1.0, hostRate * 0.004)); }
+}
+
+std::pair<juce::int64, juce::int64> CatnipProcessor::getView() const
+{
+    const juce::SpinLock::ScopedLockType sl (lock);
+    return { viewStart, viewLength };
+}
+
+juce::int64 CatnipProcessor::minViewLength() const
+{
+    auto s = getSample();
+    if (s == nullptr) return 1;
+    // never zoom closer than ~0.25 s or 64 samples per chop
+    return juce::jmin<juce::int64> (s->buffer.getNumSamples(),
+                                    juce::jmax<juce::int64> ((juce::int64) (s->sampleRate * 0.25), 64 * maxChops));
+}
+
+void CatnipProcessor::setView (juce::int64 start, juce::int64 length)
+{
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        if (sample == nullptr) return;
+        const juce::int64 len = sample->buffer.getNumSamples();
+        const auto minLen = juce::jmin<juce::int64> (len, juce::jmax<juce::int64> ((juce::int64) (sample->sampleRate * 0.25), 64 * maxChops));
+        length = juce::jlimit (minLen, len, length);
+        start = juce::jlimit<juce::int64> (0, len - length, start);
+        if (start == viewStart && length == viewLength) return;
+        viewStart = start;
+        viewLength = length;
+        rechop();
+    }
+    sendChangeMessage();
 }
 
 bool CatnipProcessor::loadFile (const juce::File& file, juce::String& error)
@@ -203,6 +286,8 @@ bool CatnipProcessor::loadFile (const juce::File& file, juce::String& error)
     {
         const juce::SpinLock::ScopedLockType sl (lock);
         std::swap (sample, data);
+        viewStart = 0;
+        viewLength = 0;   // whole file
         rechop();
     }
     missingFile = {};
@@ -311,6 +396,11 @@ void CatnipProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.setProperty ("file", data != nullptr ? data->file.getFullPathName() : missingFile, nullptr);
     state.setProperty ("count", chopCount.load(), nullptr);
     state.setProperty ("grid", gridMode.load(), nullptr);
+    {
+        const auto view = getView();
+        state.setProperty ("viewStart", view.first, nullptr);
+        state.setProperty ("viewLength", view.second, nullptr);
+    }
     state.setProperty ("selected", selectedChop.load(), nullptr);
 
     juce::StringArray b;
@@ -363,6 +453,10 @@ void CatnipProcessor::setStateInformation (const void* data, int sizeInBytes)
     juce::String error;
     if (file.existsAsFile() && loadFile (file, error))
     {
+        const auto savedLength = (juce::int64) state.getProperty ("viewLength", 0);
+        if (savedLength > 0)
+            setView ((juce::int64) state.getProperty ("viewStart", 0), savedLength);
+
         // restore hand-edited chop points if they still fit the file
         juce::StringArray parts;
         parts.addTokens (state.getProperty ("bounds").toString(), ",", {});
@@ -371,7 +465,7 @@ void CatnipProcessor::setStateInformation (const void* data, int sizeInBytes)
             std::vector<juce::int64> restored;
             for (auto& s : parts) restored.push_back (s.getLargeIntValue());
             const juce::SpinLock::ScopedLockType sl (lock);
-            if (sample != nullptr && restored.front() == 0 && restored.back() == sample->buffer.getNumSamples()
+            if (sample != nullptr && restored.front() == viewStart && restored.back() == viewStart + viewLength
                 && std::is_sorted (restored.begin(), restored.end()))
                 bounds = restored;
         }

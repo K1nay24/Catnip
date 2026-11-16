@@ -87,6 +87,48 @@ void KnobLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, 
     g.fillPath (pointer, juce::AffineTransform::rotation (angle).translated (c));
 }
 
+void WheelLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
+                                         float, float, juce::Slider&)
+{
+    const auto size = (float) juce::jmin (w, h) - 6.0f;
+    const auto r = juce::Rectangle<float> (size, size).withCentre ({ x + w * 0.5f, y + h * 0.5f - 2.0f });
+    const auto c = r.getCentre();
+    const float rad = size * 0.5f;
+
+    // drop shadow and ridged rim, like the data wheel on old samplers
+    g.setColour (colours::darkLip);
+    g.fillEllipse (r.translated (0.0f, 4.0f));
+    g.setColour (colours::dark);
+    g.fillEllipse (r);
+
+    const float spin = pos * juce::MathConstants<float>::twoPi * 2.0f;   // two full turns over the range
+    g.setColour (juce::Colours::black.withAlpha (0.35f));
+    for (int i = 0; i < 48; ++i)
+    {
+        const float a = spin + (float) i * juce::MathConstants<float>::twoPi / 48.0f;
+        g.drawLine (juce::Line<float> (c.getPointOnCircumference (rad - 1.0f, a), c.getPointOnCircumference (rad - 7.0f, a)), 2.0f);
+    }
+
+    // face
+    const auto face = r.reduced (9.0f);
+    g.setColour (juce::Colour (0xff2F2E2B));
+    g.fillEllipse (face);
+    g.setColour (juce::Colours::white.withAlpha (0.08f));
+    g.drawEllipse (face.reduced (0.5f), 1.0f);
+
+    // finger dimple
+    const auto dimpleCentre = c.getPointOnCircumference (rad * 0.55f, spin);
+    const auto dimple = juce::Rectangle<float> (rad * 0.42f, rad * 0.42f).withCentre (dimpleCentre);
+    g.setColour (juce::Colours::black.withAlpha (0.45f));
+    g.fillEllipse (dimple);
+    g.setColour (juce::Colours::white.withAlpha (0.10f));
+    g.drawEllipse (dimple.translated (0.0f, 1.0f), 1.0f);
+
+    // small orange index mark on the rim
+    g.setColour (colours::accent);
+    g.fillEllipse (juce::Rectangle<float> (5.0f, 5.0f).withCentre (c.getPointOnCircumference (rad - 13.0f, spin)));
+}
+
 //==============================================================================
 CatnipView::CatnipView (CatnipProcessor& p) : proc (p)
 {
@@ -104,6 +146,9 @@ CatnipView::CatnipView (CatnipProcessor& p) : proc (p)
         s.setMouseDragSensitivity (180);
         s.setLookAndFeel (&knobLook);
         s.setBounds (x, 438, 60, 62);
+        s.setWantsKeyboardFocus (false);
+        s.setMouseClickGrabsKeyboardFocus (false);
+        s.onDragEnd = [this] { if (auto* top = getParentComponent()) top->grabKeyboardFocus(); };
         addAndMakeVisible (s);
     };
     setupKnob (pitch, -12.0, 12.0, 1.0, 0.0, 418);
@@ -113,6 +158,21 @@ CatnipView::CatnipView (CatnipProcessor& p) : proc (p)
     pitch.onValueChange = [this] { proc.getChopParams (proc.selectedChop).pitch = (float) pitch.getValue(); repaint(); };
     decay.onValueChange = [this] { proc.getChopParams (proc.selectedChop).decay = (float) decay.getValue(); repaint(); };
     level.onValueChange = [this] { proc.getChopParams (proc.selectedChop).level = (float) level.getValue(); repaint(); };
+
+    // big zoom wheel: 0 = whole sample, 1 = closest zoom (log scale)
+    zoom.setSliderStyle (juce::Slider::RotaryVerticalDrag);
+    zoom.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    zoom.setRange (0.0, 1.0, 0.0);
+    zoom.setDoubleClickReturnValue (true, 0.0);
+    zoom.setMouseDragSensitivity (600);
+    zoom.setLookAndFeel (&wheelLook);
+    zoom.setBounds (786, 412, 132, 132);
+    zoom.setWantsKeyboardFocus (false);
+    zoom.setMouseClickGrabsKeyboardFocus (false);
+    zoom.onDragStart = [this] { zoomAnchor = selectedChopCentre(); };
+    zoom.onDragEnd = [this] { zoomAnchor = -1; if (auto* top = getParentComponent()) top->grabKeyboardFocus(); };
+    zoom.onValueChange = [this] { applyZoom(); };
+    addAndMakeVisible (zoom);
 
     for (int i = 0; i < maxChops; ++i)
         seenHits[(size_t) i] = proc.hitCounters[(size_t) i].load();
@@ -125,7 +185,7 @@ CatnipView::CatnipView (CatnipProcessor& p) : proc (p)
 CatnipView::~CatnipView()
 {
     proc.removeChangeListener (this);
-    for (auto* s : { &pitch, &decay, &level })
+    for (auto* s : { &pitch, &decay, &level, &zoom })
         s->setLookAndFeel (nullptr);
 }
 
@@ -133,6 +193,7 @@ void CatnipView::resized() {}
 
 void CatnipView::changeListenerCallback (juce::ChangeBroadcaster*)
 {
+    cachedSample = nullptr;   // sample or zoom window may have changed
     syncKnobs();
     repaint();
 }
@@ -159,8 +220,46 @@ void CatnipView::timerCallback()
     if (dirty) repaint();
 }
 
+double CatnipView::maxZoom() const
+{
+    auto s = proc.getSample();
+    if (s == nullptr) return 1.0;
+    return juce::jmax (1.0, (double) s->buffer.getNumSamples() / (double) proc.minViewLength());
+}
+
+juce::int64 CatnipView::selectedChopCentre() const
+{
+    const auto b = proc.getBounds();
+    const int sel = proc.selectedChop.load();
+    if (sel + 1 >= (int) b.size()) return -1;
+    return (b[(size_t) sel] + b[(size_t) sel + 1]) / 2;
+}
+
+void CatnipView::applyZoom()
+{
+    auto s = proc.getSample();
+    if (s == nullptr) return;
+    const double len = (double) s->buffer.getNumSamples();
+    const double factor = std::pow (maxZoom(), zoom.getValue());
+    const auto newLen = (juce::int64) (len / factor);
+    const auto view = proc.getView();
+    const auto anchor = zoomAnchor >= 0 ? zoomAnchor : view.first + view.second / 2;
+    proc.setView (anchor - newLen / 2, newLen);
+}
+
 void CatnipView::syncKnobs()
 {
+    if (auto s = proc.getSample())
+    {
+        const auto view = proc.getView();
+        const double factor = (double) s->buffer.getNumSamples() / (double) juce::jmax<juce::int64> (1, view.second);
+        const double mz = maxZoom();
+        if (! zoom.isMouseButtonDown())
+            zoom.setValue (mz > 1.0001 ? std::log (factor) / std::log (mz) : 0.0, juce::dontSendNotification);
+    }
+    else
+        zoom.setValue (0.0, juce::dontSendNotification);
+
     auto& c = proc.getChopParams (proc.selectedChop);
     pitch.setValue (c.pitch.load(), juce::dontSendNotification);
     decay.setValue (c.decay.load(), juce::dontSendNotification);
@@ -177,6 +276,7 @@ void CatnipView::selectChop (int chop)
 void CatnipView::padDown (int chop)
 {
     if (chop < 0 || chop >= proc.getChopCount()) return;
+    held[(size_t) chop] = true;          // pad shows pressed right away, whatever the audio thread does
     selectChop (chop);
     proc.keyboardState.noteOn (1, firstNote + chop, 1.0f);
 }
@@ -184,6 +284,8 @@ void CatnipView::padDown (int chop)
 void CatnipView::padUp (int chop)
 {
     if (chop < 0 || chop >= maxChops) return;
+    held[(size_t) chop] = false;
+    repaint();
     proc.keyboardState.noteOff (1, firstNote + chop, 0.0f);
 }
 
@@ -212,6 +314,33 @@ void CatnipView::setDragOver (bool b)
     repaint();
 }
 
+const std::vector<float>& CatnipView::viewPeaks (const SampleData& s, juce::int64 start, juce::int64 length)
+{
+    if (&s == cachedSample && start == cachedStart && length == cachedLength)
+        return cachedPeaks;
+
+    cachedSample = &s; cachedStart = start; cachedLength = length;
+    cachedPeaks.assign ((size_t) numPeaks, 0.0f);
+    const auto& buf = s.buffer;
+    const int chs = buf.getNumChannels();
+    float maxPeak = 0.0f;
+    for (int p = 0; p < numPeaks; ++p)
+    {
+        const auto a = start + (length * p) / numPeaks;
+        const auto e = juce::jmin<juce::int64> (buf.getNumSamples(), start + (length * (p + 1)) / numPeaks);
+        const auto step = juce::jmax<juce::int64> (1, (e - a) / 512);
+        float m = 0.0f;
+        for (auto i = a; i < e; i += step)
+            for (int c = 0; c < chs; ++c)
+                m = juce::jmax (m, std::abs (buf.getSample (c, (int) i)));
+        cachedPeaks[(size_t) p] = m;
+        maxPeak = juce::jmax (maxPeak, m);
+    }
+    if (maxPeak > 0.0f)
+        for (auto& v : cachedPeaks) v /= maxPeak;
+    return cachedPeaks;
+}
+
 //==============================================================================
 juce::Rectangle<float> CatnipView::padCell (int vis) const
 {
@@ -236,10 +365,10 @@ int CatnipView::boundaryAt (juce::Point<float> p) const
     const auto wa = waveArea();
     if (s == nullptr || ! wa.expanded (0.0f, 4.0f).contains (p)) return -1;
     const auto b = proc.getBounds();
-    const double len = (double) s->buffer.getNumSamples();
+    const auto view = proc.getView();
     for (size_t k = 1; k + 1 < b.size(); ++k)
     {
-        const float x = wa.getX() + (float) (b[k] / len) * wa.getWidth();
+        const float x = wa.getX() + (float) ((double) (b[k] - view.first) / (double) view.second) * wa.getWidth();
         if (std::abs (x - p.x) <= 4.0f) return (int) k;
     }
     return -1;
@@ -251,7 +380,8 @@ int CatnipView::chopAt (juce::Point<float> p) const
     const auto wa = waveArea();
     if (s == nullptr || ! wa.withTop (wa.getY() - 28.0f).contains (p)) return -1;
     const auto b = proc.getBounds();
-    const double pos = (p.x - wa.getX()) / wa.getWidth() * (double) s->buffer.getNumSamples();
+    const auto view = proc.getView();
+    const double pos = (double) view.first + (p.x - wa.getX()) / wa.getWidth() * (double) view.second;
     for (size_t k = 0; k + 1 < b.size(); ++k)
         if (pos >= (double) b[k] && pos < (double) b[k + 1]) return (int) k;
     return -1;
@@ -295,6 +425,7 @@ void CatnipView::mouseDown (const juce::MouseEvent& e)
     }
     else
     {
+        if (minimapArea().expanded (0.0f, 3.0f).contains (p)) { draggingMinimap = true; centreViewAt (p.x); return; }
         if ((dragBound = boundaryAt (p)) >= 0) return;
         if ((mouseChop = chopAt (p)) >= 0) { padDown (mouseChop); return; }
     }
@@ -318,13 +449,15 @@ void CatnipView::mouseDown (const juce::MouseEvent& e)
 
 void CatnipView::mouseDrag (const juce::MouseEvent& e)
 {
+    if (draggingMinimap) { centreViewAt (e.position.x); return; }
     if (dragBound >= 0)
     {
         if (auto s = proc.getSample())
         {
             const auto wa = waveArea();
             const double frac = juce::jlimit (0.0, 1.0, (double) ((e.position.x - wa.getX()) / wa.getWidth()));
-            proc.setBound (dragBound, (juce::int64) (frac * (double) s->buffer.getNumSamples()));
+            const auto view = proc.getView();
+            proc.setBound (dragBound, view.first + (juce::int64) (frac * (double) view.second));
         }
         return;
     }
@@ -344,6 +477,26 @@ void CatnipView::mouseUp (const juce::MouseEvent&)
     if (mousePad >= 0) { padUp (mousePad); mousePad = -1; }
     if (mouseChop >= 0) { padUp (mouseChop); mouseChop = -1; }
     dragBound = -1;
+    draggingMinimap = false;
+}
+
+void CatnipView::centreViewAt (float x)
+{
+    auto s = proc.getSample();
+    if (s == nullptr) return;
+    const auto mm = minimapArea();
+    const double frac = juce::jlimit (0.0, 1.0, (double) ((x - mm.getX()) / mm.getWidth()));
+    const auto view = proc.getView();
+    proc.setView ((juce::int64) (frac * (double) s->buffer.getNumSamples()) - view.second / 2, view.second);
+}
+
+void CatnipView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+{
+    if (proc.getSample() == nullptr || ! lcdArea().contains (e.position)) return;
+    // scrolling over the display moves the zoom window left / right
+    const float delta = std::abs (w.deltaX) > std::abs (w.deltaY) ? -w.deltaX : w.deltaY;
+    const auto view = proc.getView();
+    proc.setView (view.first - (juce::int64) ((double) delta * (double) view.second * 0.5), view.second);
 }
 
 //==============================================================================
@@ -465,8 +618,8 @@ void CatnipView::paintLcd (juce::Graphics& g)
     const auto b = proc.getBounds();
     const int count = juce::jmin (proc.getChopCount(), (int) b.size() - 1);
     const int sel = juce::jlimit (0, juce::jmax (0, count - 1), proc.selectedChop.load());
-    const double len = (double) s->buffer.getNumSamples();
-    auto xOf = [&] (juce::int64 pos) { return wa.getX() + (float) ((double) pos / len) * wa.getWidth(); };
+    const auto view = proc.getView();
+    auto xOf = [&] (juce::int64 pos) { return wa.getX() + (float) ((double) (pos - view.first) / (double) view.second) * wa.getWidth(); };
 
     // selected chop
     const float selX0 = xOf (b[(size_t) sel]), selX1 = xOf (b[(size_t) sel + 1]);
@@ -474,7 +627,7 @@ void CatnipView::paintLcd (juce::Graphics& g)
     g.fillRect (juce::Rectangle<float>::leftTopRightBottom (selX0, wa.getY(), selX1, wa.getBottom()));
 
     // bars
-    const auto& peaks = s->analysis.peaks;
+    const auto& peaks = viewPeaks (*s, view.first, view.second);
     const float bw = wa.getWidth() / (float) numPeaks;
     for (int i = 0; i < (int) peaks.size(); ++i)
     {
@@ -510,9 +663,30 @@ void CatnipView::paintLcd (juce::Graphics& g)
                       k == sel ? ink : inkSoft, juce::Justification::centred);
     }
 
+    // overview strip: whole sample, with the zoom window marked
+    const auto mm = minimapArea();
+    const auto& all = s->analysis.peaks;
+    const double total = (double) s->buffer.getNumSamples();
+    const float mbw = mm.getWidth() / (float) juce::jmax<size_t> (1, all.size());
+    g.setColour (inkSoft);
+    for (size_t i = 0; i < all.size(); ++i)
+    {
+        const float hh = juce::jmax (1.0f, all[i] * mm.getHeight());
+        g.fillRect (mm.getX() + (float) i * mbw, mm.getCentreY() - hh * 0.5f, juce::jmax (1.0f, mbw * 0.6f), hh);
+    }
+    const float wx0 = mm.getX() + (float) ((double) view.first / total) * mm.getWidth();
+    const float wx1 = mm.getX() + (float) ((double) (view.first + view.second) / total) * mm.getWidth();
+    const auto win = juce::Rectangle<float>::leftTopRightBottom (wx0, mm.getY() - 2.0f, juce::jmax (wx0 + 3.0f, wx1), mm.getBottom() + 2.0f);
+    g.setColour (ink.withAlpha (0.18f));
+    g.fillRect (win);
+    g.setColour (ink);
+    g.drawRect (win, 1.0f);
+
     // status line
+    const double zoomFactor = total / (double) juce::jmax<juce::int64> (1, view.second);
+    const juce::String zoomText = zoomFactor > 1.05 ? juce::String (juce::CharPointer_UTF8 (" · ZOOM ")) + juce::String (zoomFactor, zoomFactor < 10 ? 1 : 0) + juce::String (juce::CharPointer_UTF8 ("×")) : juce::String();
     const juce::String left = error.isNotEmpty() ? error
-                            : juce::String (juce::CharPointer_UTF8 ("AUTO-CHOP · ")) + juce::String (proc.isGridMode() ? "GRID" : "TRANSIENTS") + juce::String (juce::CharPointer_UTF8 (" · ")) + juce::String (count) + " CHOPS";
+                            : juce::String (proc.isGridMode() ? "GRID" : "TRANSIENTS") + juce::String (juce::CharPointer_UTF8 (" · ")) + juce::String (count) + " CHOPS" + zoomText;
     const double sr = s->sampleRate;
     const juce::String right = "CHOP " + juce::String (sel + 1).paddedLeft ('0', 2) + juce::String (juce::CharPointer_UTF8 (" · "))
                              + formatTime ((double) b[(size_t) sel] / sr) + juce::String (juce::CharPointer_UTF8 (" – ")) + formatTime ((double) b[(size_t) sel + 1] / sr);
@@ -533,7 +707,7 @@ void CatnipView::paintPads (juce::Graphics& g)
         const int chop = chopOfVisual (v);
         const bool empty = ! loaded || chop >= count;
         const bool on = loaded && chop == sel && ! empty;
-        const bool hit = (flashUntil[(size_t) chop] != 0 && now <= flashUntil[(size_t) chop]) || chop == mousePad;
+        const bool hit = (flashUntil[(size_t) chop] != 0 && now <= flashUntil[(size_t) chop]) || held[(size_t) chop];
 
         const auto cell = padCell (v);
         const auto labelColour = empty ? colours::emptyText : (on ? colours::accent : colours::muted);
@@ -546,7 +720,7 @@ void CatnipView::paintPads (juce::Graphics& g)
         g.fillRoundedRectangle (pad.translated (0.0f, 2.0f), 6.0f);
 
         if (hit) pad = pad.translated (0.0f, 2.0f);
-        g.setColour (hit ? colours::padHit : colours::padBlack);
+        g.setColour (hit ? colours::padBlack.interpolatedWith (colours::accent, 0.55f) : colours::padBlack);
         g.fillRoundedRectangle (pad, 6.0f);
 
         juce::Graphics::ScopedSaveState ss (g);
@@ -644,6 +818,21 @@ void CatnipView::paintControls (juce::Graphics& g)
     toggle (reverseButton(), "REVERSE", c.reverse.load());
     toggle (gateButton(), c.gate.load() ? "GATE" : "ONE-SHOT", c.gate.load());
 
+    // zoom wheel caption
+    label ("ZOOM", 690.0f, 414.0f);
+    {
+        juce::String zt = "GANZ";
+        if (auto s = proc.getSample())
+        {
+            const double f = (double) s->buffer.getNumSamples() / (double) juce::jmax<juce::int64> (1, proc.getView().second);
+            if (f > 1.05) zt = juce::String (f, f < 10 ? 1 : 0) + juce::String (juce::CharPointer_UTF8 ("×"));
+        }
+        drawText (g, zt, { 690.0f, 432.0f, 96.0f, 26.0f }, F.lcd (26.0f), colours::text);
+        drawText (g, "Drehen = ins", { 690.0f, 466.0f, 96.0f, 14.0f }, F.regular (11.0f), colours::muted);
+        drawText (g, "Sample zoomen,", { 690.0f, 480.0f, 96.0f, 14.0f }, F.regular (11.0f), colours::muted);
+        drawText (g, "neu choppen", { 690.0f, 494.0f, 96.0f, 14.0f }, F.regular (11.0f), colours::muted);
+    }
+
     drawText (g, juce::String (juce::CharPointer_UTF8 ("Sample reinziehen · dann Tasten spielen")), { 420.0f, 600.0f, 270.0f, 40.0f }, F.regular (12.0f), colours::muted);
 
     const auto eb = exportButton();
@@ -695,6 +884,13 @@ CatnipEditor::CatnipEditor (CatnipProcessor& p)
     if (auto* c = getConstrainer())
         c->setFixedAspectRatio ((double) CatnipView::width / (double) CatnipView::height);
     setSize (CatnipView::width, CatnipView::height);
+}
+
+void CatnipEditor::parentHierarchyChanged()
+{
+    // take the keyboard as soon as the window is on screen, so pad keys work without a click
+    juce::Component::SafePointer<CatnipEditor> safe (this);
+    juce::MessageManager::callAsync ([safe] { if (safe != nullptr && safe->isShowing()) safe->grabKeyboardFocus(); });
 }
 
 void CatnipEditor::resized()

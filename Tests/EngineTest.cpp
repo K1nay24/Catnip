@@ -122,6 +122,40 @@ int main()
     check (renderPeak (proc, {}, 20) > 0.01f, "on-screen pads / computer keys trigger via keyboard state");
     proc.keyboardState.noteOff (1, catnip::firstNote + 0, 0.0f);
 
+    std::cout << "choke\n";
+    {
+        juce::AudioBuffer<float> out (2, 512);
+        juce::MidiBuffer m;
+        m.addEvent (juce::MidiMessage::noteOn (1, catnip::firstNote + 0, 1.0f), 0);
+        m.addEvent (juce::MidiMessage::noteOn (1, catnip::firstNote + 2, 1.0f), 100);
+        m.addEvent (juce::MidiMessage::noteOn (1, catnip::firstNote + 4, 1.0f), 200);
+        proc.processBlock (out, m);
+        check (proc.getActiveVoiceCount() == 1, "a new chop cuts the previous ones (no overlap)");
+        juce::MidiBuffer again; again.addEvent (juce::MidiMessage::noteOn (1, catnip::firstNote + 4, 1.0f), 0);
+        proc.processBlock (out, again);
+        check (proc.getActiveVoiceCount() == 1, "retriggering the same chop does not stack");
+        for (int i = 0; i < 40; ++i) { juce::MidiBuffer none; proc.processBlock (out, none); }
+    }
+
+    std::cout << "zoom\n";
+    {
+        const auto len = proc.getSample()->buffer.getNumSamples();
+        proc.setView (len / 4, len / 4);
+        const auto v = proc.getView();
+        const auto zb = proc.getBounds();
+        check (v.first == len / 4 && v.second == len / 4, "zoom window is set");
+        check (zb.size() == 17 && zb.front() == v.first && zb.back() == v.first + v.second, "16 new chops fill only the zoomed window");
+        bool inside = true;
+        for (auto x : zb) inside = inside && x >= v.first && x <= v.first + v.second;
+        check (inside, "all chop points lie inside the window");
+        proc.setView (-5000, 10);
+        check (proc.getView().first == 0 && proc.getView().second == proc.minViewLength(), "zoom is clamped to the file and a minimum length");
+        juce::MidiBuffer zm; zm.addEvent (juce::MidiMessage::noteOn (1, catnip::firstNote, 1.0f), 0);
+        check (renderPeak (proc, zm, 10) > 0.0f, "zoomed chops play");
+        proc.setView (0, len);
+        check (proc.getBounds().size() == 17 && proc.getBounds().back() == len, "zooming out re-chops the whole file");
+    }
+
     std::cout << "editing + export\n";
     auto before = proc.getBounds();
     proc.setBound (3, before[3] + 2000);
@@ -135,6 +169,11 @@ int main()
     proc.getChopParams (5).pitch = 7.0f;
     proc.getChopParams (5).reverse = true;
     proc.selectedChop = 5;
+    {
+        const auto len = proc.getSample()->buffer.getNumSamples();
+        proc.setView (len / 2, len / 3);
+    }
+    const auto savedView = proc.getView();
     const auto edited = proc.getBounds();
     juce::MemoryBlock state;
     proc.getStateInformation (state);
@@ -146,9 +185,10 @@ int main()
     check (restored.getBounds() == edited, "hand-edited chop points survive save/load");
     check (restored.getChopParams (5).pitch.load() == 7.0f && restored.getChopParams (5).reverse.load(), "per-chop settings survive");
     check (restored.selectedChop.load() == 5, "selected chop survives");
+    check (restored.getView() == savedView, "zoom window survives save/load");
 
     std::cout << "screens\n";
-    snapshot (proc, "02_loaded.png");
+    snapshot (proc, "02_loaded.png", [] (CatnipEditor& e) { e.keyPressed (juce::KeyPress ('a')); });
     snapshot (proc, "03_dragover.png", [] (CatnipEditor& e) { e.fileDragEnter ({}, 0, 0); });
 
     std::cout << (failures == 0 ? "ALL PASSED\n" : "FAILURES: ") << (failures ? juce::String (failures) : juce::String()) << "\n";
