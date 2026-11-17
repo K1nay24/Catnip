@@ -654,7 +654,7 @@ void CatnipView::paintPanel (juce::Graphics&)
         const char* parts[] = { "KINAI \xc2\xb7 TAP SAMPLER", "16 PADS", "SNAP TO TRANSIENT" };
         for (int i = 0; i < 3; ++i)
         {
-            const juce::String t (juce::CharPointer_UTF8 (parts[i]));
+            const auto t = juce::String::fromUTF8 (parts[i]);
             const float w = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), t);
             g.setColour (ink);
             g.drawText (t, juce::Rectangle<float> (x, 652.0f, w + 4.0f, 16.0f), juce::Justification::centredLeft, false);
