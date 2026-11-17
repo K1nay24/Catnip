@@ -37,6 +37,45 @@ static juce::File writeTestLoop()
     return f;
 }
 
+// 4 bars of a simple beat at the given tempo: kick on 1 and 3, snare on 2 and 4, hats on eighths
+static juce::File writeDrumLoop (double bpm, juce::Array<juce::int64>& beats)
+{
+    const double sr = 44100.0, beat = 60.0 / bpm;
+    const int len = (int) std::ceil (sr * 16 * beat);
+    juce::AudioBuffer<float> buf (2, len);
+    buf.clear();
+    juce::Random rnd (5);
+    auto add = [&] (double t, int kind)
+    {
+        const auto start = (int) std::lround (t * sr);
+        const int dur = (int) (sr * (kind == 2 ? 0.05 : 0.25));
+        for (int n = 0; n < dur && start + n < len; ++n)
+        {
+            const double tt = n / sr;
+            float v = 0.0f;
+            if (kind == 0) v = (float) (0.9 * std::exp (-tt * 18.0) * std::sin (2.0 * juce::MathConstants<double>::pi * (55.0 + 90.0 * std::exp (-tt * 40.0)) * tt));
+            if (kind == 1) v = (float) (0.6 * std::exp (-tt * 25.0) * (rnd.nextFloat() * 2.0f - 1.0f));
+            if (kind == 2) v = (float) (0.18 * std::exp (-tt * 90.0) * (rnd.nextFloat() * 2.0f - 1.0f));
+            buf.addSample (0, start + n, v);
+            buf.addSample (1, start + n, v);
+        }
+    };
+    for (int b = 0; b < 16; ++b)
+    {
+        beats.add ((juce::int64) std::lround (b * beat * sr));
+        add (b * beat, b % 2 == 0 ? 0 : 1);
+        add (b * beat, 2);
+        add ((b + 0.5) * beat, 2);
+    }
+    auto f = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("catnip_test_beat_92.wav");
+    f.deleteFile();
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (f);
+    auto w = wav.createWriterFor (stream, juce::AudioFormatWriterOptions{}.withSampleRate (sr).withNumChannels (2).withBitsPerSample (24));
+    w->writeFromAudioSampleBuffer (buf, 0, len);
+    return f;
+}
+
 static float renderPeak (CatnipProcessor& p, juce::MidiBuffer midi, int blocks, int blockSize = 512)
 {
     float peak = 0.0f;
@@ -187,8 +226,89 @@ int main()
     check (restored.selectedChop.load() == 5, "selected chop survives");
     check (restored.getView() == savedView, "zoom window survives save/load");
 
+    std::cout << "takt mode (92 BPM drum loop)\n";
+    CatnipProcessor beatProc;
+    beatProc.prepareToPlay (44100.0, 512);
+    juce::Array<juce::int64> beats;
+    {
+        juce::String err2;
+        check (beatProc.loadFile (writeDrumLoop (92.0, beats), err2), "loads the drum loop");
+        std::cout << "  (tempo " << beatProc.getBpm() << " BPM)\n";
+        check (std::abs (beatProc.getBpm() - 92.0) < 0.2, "tempo detected as 92 BPM");
+        beatProc.setMode (catnip::ChopMode::bars);
+        beatProc.setDivision (catnip::Division::bar);
+        check (beatProc.getNumChops() == 4, "1 TAKT: 4 chops for 4 bars");
+        check (std::llabs (beatProc.getBounds()[0] - beats[0]) < 900, "first chop starts on bar 1");
+        beatProc.setDivision (catnip::Division::half);
+        check (beatProc.getNumChops() == 8, "1/2 TAKT: 8 chops");
+        beatProc.setDivision (catnip::Division::beat);
+        check (beatProc.getNumChops() == 16, "SCHLAG: 16 chops");
+        bool onBeats = true;
+        const auto bb = beatProc.getBounds();
+        for (int k = 0; k < 16; ++k) onBeats = onBeats && std::llabs (bb[(size_t) k] - beats[k]) < 900;
+        check (onBeats, "every beat chop starts on its beat (within 20 ms)");
+        beatProc.setChopCount (8);
+        check (beatProc.getNumChops() == 8, "MAX. CHOPS 8 caps the beat chops");
+        beatProc.setChopCount (16);
+
+        const auto before = beatProc.getBounds()[1];
+        beatProc.shiftGrid (2000);
+        check (beatProc.getBounds()[1] == before + 2000, "dragging moves the whole grid");
+        beatProc.resetBpm();
+        check (std::llabs (beatProc.getBounds()[0] - beats[0]) < 900, "reset brings the grid back to bar 1");
+        beatProc.setDivision (catnip::Division::bar);
+        beatProc.setBpm (beatProc.getBpm() * 0.5);
+        check (beatProc.getNumChops() == 2, "half the tempo = half the bars");
+        beatProc.resetBpm();
+    }
+
+    std::cout << "preview + tap mode\n";
+    {
+        beatProc.startPreview();
+        juce::AudioBuffer<float> out (2, 512);
+        float peak = 0.0f;
+        for (int i = 0; i < 20; ++i) { juce::MidiBuffer none; beatProc.processBlock (out, none); peak = juce::jmax (peak, out.getMagnitude (0, 512)); }
+        check (peak > 0.05f && beatProc.getPreviewPosition() > 9000, "space plays the sample, play head moves");
+        juce::MidiBuffer padHit; padHit.addEvent (juce::MidiMessage::noteOn (1, catnip::firstNote, 1.0f), 0);
+        beatProc.processBlock (out, padHit);
+        for (int i = 0; i < 2; ++i) { juce::MidiBuffer none; beatProc.processBlock (out, none); }
+        check (beatProc.getPreviewPosition() < 0, "hitting a pad stops the preview (no overlap)");
+
+        beatProc.setMode (catnip::ChopMode::tap);
+        beatProc.startTapping();
+        check (beatProc.isTapping(), "tapping starts");
+        // taps come ~60 ms late, like a human reacting: they must land on the hits
+        for (int k : { 0, 2, 4, 6, 9 })
+            beatProc.addTapAt (beats[k] + 2650);
+        const auto tb = beatProc.getBounds();
+        check (beatProc.getNumChops() == 5, "5 taps = 5 chops");
+        bool snapped = tb.size() == 6;
+        const int idx[] = { 0, 2, 4, 6, 9 };
+        for (int k = 0; k < 5 && snapped; ++k) snapped = std::llabs (tb[(size_t) k] - beats[idx[k]]) < 300;
+        check (snapped, "late taps snap back onto the hits");
+        check (beatProc.addTapAt (beats[9] + 100) < 0, "a double tap on the same hit is ignored");
+        beatProc.stopPreview();
+        check (! beatProc.isTapping(), "space stops tapping");
+
+        juce::MemoryBlock st;
+        beatProc.getStateInformation (st);
+        CatnipProcessor again;
+        again.prepareToPlay (44100.0, 512);
+        again.setStateInformation (st.getData(), (int) st.getSize());
+        check (again.getMode() == catnip::ChopMode::tap && again.getBounds() == tb, "tapped chops survive save/load");
+    }
+
     std::cout << "screens\n";
     snapshot (proc, "02_loaded.png", [] (CatnipEditor& e) { e.keyPressed (juce::KeyPress ('a')); });
+    beatProc.setMode (catnip::ChopMode::bars);
+    beatProc.setDivision (catnip::Division::half);
+    beatProc.selectedChop = 2;
+    snapshot (beatProc, "04_takt.png");
+    beatProc.setMode (catnip::ChopMode::tap);
+    for (int k : { 0, 3, 4, 8, 10, 12 }) beatProc.addTapAt (beats[k] + 2000);
+    snapshot (beatProc, "05_tap.png");
+    beatProc.setMode (catnip::ChopMode::transient);
+    snapshot (beatProc, "06_transient.png");
     snapshot (proc, "03_dragover.png", [] (CatnipEditor& e) { e.fileDragEnter ({}, 0, 0); });
 
     std::cout << (failures == 0 ? "ALL PASSED\n" : "FAILURES: ") << (failures ? juce::String (failures) : juce::String()) << "\n";

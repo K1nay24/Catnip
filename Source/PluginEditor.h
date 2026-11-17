@@ -76,6 +76,8 @@ public:
     void setDragOver (bool);
     void padDown (int chop);
     void padUp (int chop);
+    void spacePressed();
+    bool tapKey();   // true if a tap was taken (TAP mode, running)
 
     static constexpr int width = 960, height = 660;
 
@@ -100,8 +102,16 @@ private:
     juce::Rectangle<float> chooseButton() const  { return { 390.0f, 248.0f, 180.0f, 32.0f }; }
     juce::Rectangle<float> modeButton (int i) const;
     juce::Rectangle<float> countButton (int i) const;
-    juce::Rectangle<float> reverseButton() const { return { 420.0f, 556.0f, 96.0f, 36.0f }; }
-    juce::Rectangle<float> gateButton() const    { return { 524.0f, 556.0f, 96.0f, 36.0f }; }
+    juce::Rectangle<float> divisionButton (int i) const;
+    juce::Rectangle<float> bpmMinus() const   { return { 690.0f, 391.0f, 30.0f, 36.0f }; }
+    juce::Rectangle<float> bpmBox() const     { return { 724.0f, 388.0f, 96.0f, 42.0f }; }
+    juce::Rectangle<float> bpmPlus() const    { return { 824.0f, 391.0f, 30.0f, 36.0f }; }
+    juce::Rectangle<float> bpmHalf() const    { return { 864.0f, 391.0f, 36.0f, 36.0f }; }
+    juce::Rectangle<float> bpmDouble() const  { return { 904.0f, 391.0f, 36.0f, 36.0f }; }
+    juce::Rectangle<float> tapButton() const  { return { 420.0f, 388.0f, 170.0f, 42.0f }; }
+    juce::Rectangle<float> clearButton() const { return { 598.0f, 388.0f, 72.0f, 42.0f }; }
+    juce::Rectangle<float> reverseButton() const { return { 420.0f, 590.0f, 96.0f, 36.0f }; }
+    juce::Rectangle<float> gateButton() const    { return { 524.0f, 590.0f, 96.0f, 36.0f }; }
     juce::Rectangle<float> exportButton() const  { return { 700.0f, 600.0f, 240.0f, 40.0f }; }
 
     void paintHeader (juce::Graphics&);
@@ -123,7 +133,9 @@ private:
     const catnip::SampleData* cachedSample = nullptr;
     juce::int64 cachedStart = -1, cachedLength = -1;
     std::vector<float> cachedPeaks;
-    bool draggingMinimap = false;
+    bool draggingMinimap = false, draggingBpm = false, wasPlaying = false;
+    double bpmDragStart = 120.0;
+    juce::int64 dragBoundStart = 0, dragOriginStart = 0;
     juce::Image mascot;
     std::unique_ptr<juce::FileChooser> chooser;
 

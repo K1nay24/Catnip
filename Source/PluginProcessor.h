@@ -31,6 +31,12 @@ namespace catnip
     };
 }
 
+namespace catnip
+{
+    enum class ChopMode { transient = 0, bars = 1, tap = 2 };
+    enum class Division { bar = 0, half = 1, beat = 2 };
+}
+
 class CatnipProcessor final : public juce::AudioProcessor,
                               public juce::ChangeBroadcaster
 {
@@ -74,10 +80,32 @@ public:
     void setView (juce::int64 start, juce::int64 length);
     juce::int64 minViewLength() const;
 
-    int getChopCount() const noexcept { return chopCount.load(); }
+    int getChopCount() const noexcept { return chopCount.load(); }   // 8 or 16: the most chops
     void setChopCount (int newCount);
-    bool isGridMode() const noexcept { return gridMode.load(); }
-    void setGridMode (bool shouldUseGrid);
+    int getNumChops() const;                                        // chops that exist right now
+
+    catnip::ChopMode getMode() const noexcept { return mode.load(); }
+    void setMode (catnip::ChopMode);
+    catnip::Division getDivision() const noexcept { return division; }
+    void setDivision (catnip::Division);
+
+    double getBpm() const;
+    double getDetectedBpm() const;
+    void setBpm (double);
+    void resetBpm();                       // back to the detected tempo and bar 1
+    void shiftGrid (juce::int64 delta);    // move the bar grid (TAKT mode)
+    juce::int64 getGridOrigin() const;
+
+    // Preview playback of the visible window (space bar) and live tapping of chops (TAP mode)
+    void startPreview (juce::int64 fromSample = -1);
+    void stopPreview();
+    bool isPreviewing() const noexcept { return previewPosition.load() >= 0 || previewStartRequest.load() >= 0; }
+    juce::int64 getPreviewPosition() const noexcept { return previewPosition.load(); }
+    void startTapping();
+    bool isTapping() const noexcept { return tapping.load(); }
+    int tap();                                   // sets a chop at the play position; returns its index or -1
+    int addTapAt (juce::int64 position);         // same, at a given sample (snaps to the nearest hit)
+    void clearTaps();
 
     catnip::ChopParams& getChopParams (int index) { return chops[(size_t) juce::jlimit (0, catnip::maxChops - 1, index)]; }
 
@@ -94,6 +122,14 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
 private:
+    struct Preview
+    {
+        bool active = false, releasing = false;
+        double position = 0.0, increment = 1.0;
+        juce::int64 end = 0;
+        float attack = 0.0f, release = 1.0f, releaseStep = 0.0f;
+    };
+
     struct Voice
     {
         bool active = false, releasing = false, reverse = false;
@@ -107,6 +143,8 @@ private:
     void startVoice (int chop, float velocity);
     void stopVoice (int chop);
     void renderVoices (juce::AudioBuffer<float>& out, int startSample, int numSamples);
+    void renderPreview (juce::AudioBuffer<float>& out);
+    double samplesPerChop() const;   // TAKT mode, lock held
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
@@ -118,7 +156,16 @@ private:
     std::array<Voice, 8> voices;   // one sounding chop at a time; extra slots only hold fade-outs
 
     std::atomic<int> chopCount { 16 };
-    std::atomic<bool> gridMode { false };
+    std::atomic<catnip::ChopMode> mode { catnip::ChopMode::transient };
+    catnip::Division division = catnip::Division::bar;   // guarded by lock
+    double bpm = 120.0;                                  // guarded by lock
+    juce::int64 gridOrigin = 0;                          // guarded by lock: sample of bar 1
+    std::vector<juce::int64> taps;                       // guarded by lock: tapped chop starts
+    int tapsThisPass = 0;
+
+    Preview preview;                                     // audio thread
+    std::atomic<juce::int64> previewStartRequest { -1 }, previewEndRequest { 0 }, previewPosition { -1 };
+    std::atomic<bool> previewStopRequest { false }, tapping { false };
     double hostRate = 44100.0;
     juce::String missingFile;
     std::atomic<float>* volumeParam = nullptr;

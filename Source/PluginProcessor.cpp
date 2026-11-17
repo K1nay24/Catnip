@@ -35,8 +35,15 @@ void CatnipProcessor::prepareToPlay (double sampleRate, int)
 //==============================================================================
 void CatnipProcessor::startVoice (int chop, float velocity)
 {
-    if (sample == nullptr || chop < 0 || chop >= chopCount.load() || chop + 1 >= (int) bounds.size())
+    if (sample == nullptr || chop < 0 || chop + 1 >= (int) bounds.size())
         return;
+
+    // a pad always takes over from the preview
+    if (preview.active && ! preview.releasing)
+    {
+        preview.releasing = true;
+        preview.releaseStep = (float) (1.0 / std::max (1.0, hostRate * 0.004));
+    }
 
     const auto start = bounds[(size_t) chop];
     const auto end = bounds[(size_t) chop + 1];
@@ -154,6 +161,47 @@ void CatnipProcessor::renderVoices (juce::AudioBuffer<float>& out, int startSamp
     }
 }
 
+void CatnipProcessor::renderPreview (juce::AudioBuffer<float>& out)
+{
+    if (! preview.active || sample == nullptr)
+    {
+        previewPosition = -1;
+        return;
+    }
+
+    const auto& src = sample->buffer;
+    const int srcChannels = src.getNumChannels();
+    const auto attackStep = (float) (1.0 / std::max (1.0, hostRate * 0.003));
+    for (int n = 0; n < out.getNumSamples(); ++n)
+    {
+        const double remaining = (double) preview.end - preview.position;
+        if (remaining <= 1.0) { preview.active = false; break; }
+
+        float amp = 0.8f;
+        if (preview.attack < 1.0f) { preview.attack = std::min (1.0f, preview.attack + attackStep); amp *= preview.attack; }
+        const double fade = sample->sampleRate * 0.004;
+        if (remaining < fade) amp *= (float) (remaining / fade);
+        if (preview.releasing)
+        {
+            preview.release -= preview.releaseStep;
+            if (preview.release <= 0.0f) { preview.active = false; break; }
+            amp *= preview.release;
+        }
+
+        const auto i0 = (juce::int64) preview.position;
+        const auto frac = (float) (preview.position - (double) i0);
+        const auto i1 = juce::jmin<juce::int64> (i0 + 1, src.getNumSamples() - 1);
+        for (int c = 0; c < out.getNumChannels(); ++c)
+        {
+            const int sc = std::min (c, srcChannels - 1);
+            const float s0 = src.getSample (sc, (int) i0), s1 = src.getSample (sc, (int) i1);
+            out.addSample (c, n, (s0 + (s1 - s0) * frac) * amp);
+        }
+        preview.position += preview.increment;
+    }
+    previewPosition = preview.active && ! preview.releasing ? (juce::int64) preview.position : -1;
+}
+
 void CatnipProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
@@ -165,6 +213,23 @@ void CatnipProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     const juce::SpinLock::ScopedTryLockType sl (lock);
     if (! sl.isLocked())
         return;
+
+    // preview (whole sample / window playback for listening and tapping)
+    if (previewStopRequest.exchange (false) && preview.active)
+    {
+        preview.releasing = true;
+        preview.releaseStep = (float) (1.0 / std::max (1.0, hostRate * 0.004));
+    }
+    if (const auto req = previewStartRequest.exchange (-1); req >= 0 && sample != nullptr)
+    {
+        preview.active = true;
+        preview.releasing = false;
+        preview.release = 1.0f;
+        preview.position = (double) req;
+        preview.end = juce::jmin<juce::int64> (previewEndRequest.load(), sample->buffer.getNumSamples());
+        preview.increment = sample->sampleRate / hostRate;
+        preview.attack = 0.0f;
+    }
 
     int pos = 0;
     for (const auto meta : midi)
@@ -184,10 +249,19 @@ void CatnipProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     if (pos < buffer.getNumSamples())
         renderVoices (buffer, pos, buffer.getNumSamples() - pos);
 
+    renderPreview (buffer);
+
     buffer.applyGain (juce::Decibels::decibelsToGain (volumeParam->load()));
 }
 
 //==============================================================================
+double CatnipProcessor::samplesPerChop() const
+{
+    if (sample == nullptr) return 0.0;
+    const double beat = sample->sampleRate * 60.0 / juce::jmax (20.0, bpm);
+    return beat * (division == Division::bar ? 4.0 : division == Division::half ? 2.0 : 1.0);
+}
+
 void CatnipProcessor::rechop()
 {
     if (sample == nullptr) { bounds.clear(); return; }
@@ -195,29 +269,200 @@ void CatnipProcessor::rechop()
     if (viewLength <= 0 || viewLength > len) viewLength = len;
     viewStart = juce::jlimit<juce::int64> (0, len - viewLength, viewStart);
 
-    const auto a = viewStart, windowLen = viewLength;
+    const auto a = viewStart, windowLen = viewLength, b = viewStart + viewLength;
     const int count = chopCount.load();
+    const auto m = mode.load();
 
-    if (gridMode.load())
+    if (m == ChopMode::bars)
     {
-        bounds = gridBounds (windowLen, count);
+        bounds = beatGridBounds (gridOrigin, samplesPerChop(), a, b, count);
+        if (bounds.empty())                       // window shorter than one chop
+            bounds = { a, b };
+    }
+    else if (m == ChopMode::tap && ! taps.empty())
+    {
+        bounds = taps;
+        const auto last = taps.back();
+        bounds.push_back (last < b ? b : len);    // last chop runs to the end of the window
     }
     else
     {
         // only the transients inside the visible window, relative to its start
         std::vector<Onset> local;
         for (const auto& o : sample->analysis.onsets)
-            if (o.sample > a && o.sample < a + windowLen)
+            if (o.sample > a && o.sample < b)
                 local.push_back ({ o.sample - a, o.strength });
         bounds = transientBounds (local, windowLen, count);
-    }
-    for (auto& b : bounds) b += a;
-    if (! gridMode.load())
+        for (auto& x : bounds) x += a;
         snapToZeroCrossings (bounds, sample->buffer);
+    }
 
     // fade out whatever is playing instead of cutting it hard
     for (auto& v : voices)
         if (v.active) { v.releasing = true; v.releaseStep = (float) (1.0 / std::max (1.0, hostRate * 0.004)); }
+}
+
+int CatnipProcessor::getNumChops() const
+{
+    const juce::SpinLock::ScopedLockType sl (lock);
+    return juce::jmax (0, (int) bounds.size() - 1);
+}
+
+void CatnipProcessor::setMode (ChopMode newMode)
+{
+    if (newMode == mode.load()) return;
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        mode = newMode;
+        rechop();
+    }
+    selectedChop = 0;
+    sendChangeMessage();
+}
+
+void CatnipProcessor::setDivision (Division d)
+{
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        if (d == division) return;
+        division = d;
+        rechop();
+    }
+    sendChangeMessage();
+}
+
+void CatnipProcessor::setBpm (double newBpm)
+{
+    newBpm = juce::jlimit (40.0, 250.0, newBpm);
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        if (std::abs (newBpm - bpm) < 1e-6) return;
+        bpm = newBpm;
+        rechop();
+    }
+    sendChangeMessage();
+}
+
+double CatnipProcessor::getBpm() const
+{
+    const juce::SpinLock::ScopedLockType sl (lock);
+    return bpm;
+}
+
+double CatnipProcessor::getDetectedBpm() const
+{
+    const juce::SpinLock::ScopedLockType sl (lock);
+    return sample != nullptr ? sample->analysis.bpm : 0.0;
+}
+
+void CatnipProcessor::resetBpm()
+{
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        if (sample == nullptr) return;
+        bpm = sample->analysis.bpm > 0.0 ? sample->analysis.bpm : 120.0;
+        gridOrigin = sample->analysis.firstDownbeat;
+        rechop();
+    }
+    sendChangeMessage();
+}
+
+void CatnipProcessor::shiftGrid (juce::int64 delta)
+{
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        if (sample == nullptr) return;
+        // keep bar 1 inside the file: wrap the origin by whole chops
+        const double spc = samplesPerChop();
+        auto origin = gridOrigin + delta;
+        while (spc > 0.0 && origin < 0) origin += (juce::int64) std::llround (spc);
+        gridOrigin = juce::jmin<juce::int64> (origin, sample->buffer.getNumSamples() - 1);
+        rechop();
+    }
+    sendChangeMessage();
+}
+
+juce::int64 CatnipProcessor::getGridOrigin() const
+{
+    const juce::SpinLock::ScopedLockType sl (lock);
+    return gridOrigin;
+}
+
+//==============================================================================
+void CatnipProcessor::startPreview (juce::int64 from)
+{
+    auto s = getSample();
+    if (s == nullptr) return;
+    const auto view = getView();
+    previewEndRequest = view.first + view.second;
+    previewStartRequest = juce::jlimit<juce::int64> (0, view.first + view.second - 1, from < 0 ? view.first : from);
+    previewPosition = previewStartRequest.load();   // so a tap right away already has a position
+}
+
+void CatnipProcessor::stopPreview()
+{
+    previewStartRequest = -1;
+    previewStopRequest = true;
+    previewPosition = -1;
+    tapping = false;
+}
+
+void CatnipProcessor::startTapping()
+{
+    if (getSample() == nullptr) return;
+    if (mode.load() != ChopMode::tap) setMode (ChopMode::tap);
+    tapping = true;
+    tapsThisPass = 0;
+    startPreview (-1);
+    sendChangeMessage();
+}
+
+int CatnipProcessor::tap()
+{
+    if (! tapping) return -1;
+    const auto pos = previewPosition.load();
+    return pos >= 0 ? addTapAt (pos) : -1;
+}
+
+int CatnipProcessor::addTapAt (juce::int64 position)
+{
+    int index = -1;
+    bool full = false;
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        if (sample == nullptr) return -1;
+        const double sr = sample->sampleRate;
+
+        // people tap a little after they hear the hit: look back further than forward
+        const auto hit = nearestOnset (sample->analysis.onsetsByTime, position, (juce::int64) (sr * 0.15), (juce::int64) (sr * 0.04));
+        const auto at = hit >= 0 ? hit : position;
+
+        if (tapsThisPass == 0)
+            taps.clear();                          // first tap of a pass replaces the old chops
+        if (! taps.empty() && at <= taps.back() + (juce::int64) (sr * 0.05))
+            return -1;                             // double tap on the same hit
+        taps.push_back (at);
+        ++tapsThisPass;
+        index = (int) taps.size() - 1;
+        full = (int) taps.size() >= chopCount.load();
+        rechop();
+    }
+    selectedChop = index;
+    hitCounters[(size_t) index].fetch_add (1);
+    if (full)
+        stopPreview();
+    sendChangeMessage();
+    return index;
+}
+
+void CatnipProcessor::clearTaps()
+{
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        taps.clear();
+        rechop();
+    }
+    sendChangeMessage();
 }
 
 std::pair<juce::int64, juce::int64> CatnipProcessor::getView() const
@@ -281,17 +526,23 @@ bool CatnipProcessor::loadFile (const juce::File& file, juce::String& error)
     reader->read (&data->buffer, 0, (int) len, 0, true, channels > 1);
     data->sampleRate = reader->sampleRate;
     data->file = file;
-    data->analysis = analyse (data->buffer, numPeaks);
+    data->analysis = analyse (data->buffer, data->sampleRate, numPeaks);
 
     {
         const juce::SpinLock::ScopedLockType sl (lock);
         std::swap (sample, data);
         viewStart = 0;
         viewLength = 0;   // whole file
+        bpm = sample->analysis.bpm > 0.0 ? sample->analysis.bpm : 120.0;
+        gridOrigin = sample->analysis.firstDownbeat;
+        taps.clear();
+        preview.active = false;
         rechop();
     }
     missingFile = {};
     selectedChop = 0;
+    tapping = false;
+    previewPosition = -1;
     sendChangeMessage();
     return true;   // old sample (now in `data`) is released here, off the audio thread
 }
@@ -316,6 +567,8 @@ void CatnipProcessor::setBound (int index, juce::int64 position)
         const juce::int64 minGap = 256;
         bounds[(size_t) index] = juce::jlimit (bounds[(size_t) index - 1] + minGap,
                                                bounds[(size_t) index + 1] - minGap, position);
+        if (mode.load() == ChopMode::tap && index < (int) taps.size())
+            taps[(size_t) index] = bounds[(size_t) index];
     }
     sendChangeMessage();
 }
@@ -329,18 +582,7 @@ void CatnipProcessor::setChopCount (int newCount)
         chopCount = newCount;
         rechop();
     }
-    selectedChop = juce::jmin (selectedChop.load(), newCount - 1);
-    sendChangeMessage();
-}
-
-void CatnipProcessor::setGridMode (bool shouldUseGrid)
-{
-    if (shouldUseGrid == gridMode.load()) return;
-    {
-        const juce::SpinLock::ScopedLockType sl (lock);
-        gridMode = shouldUseGrid;
-        rechop();
-    }
+    selectedChop = juce::jmin (selectedChop.load(), juce::jmax (0, getNumChops() - 1));
     sendChangeMessage();
 }
 
@@ -356,7 +598,7 @@ juce::StringArray CatnipProcessor::exportChopsToTempFiles()
     const auto base = juce::File::createLegalFileName (data->file.getFileNameWithoutExtension());
 
     juce::WavAudioFormat wav;
-    const int count = juce::jmin (chopCount.load(), (int) b.size() - 1);
+    const int count = (int) b.size() - 1;
     for (int i = 0; i < count; ++i)
     {
         const auto start = b[(size_t) i];
@@ -395,7 +637,16 @@ void CatnipProcessor::getStateInformation (juce::MemoryBlock& destData)
     auto data = getSample();
     state.setProperty ("file", data != nullptr ? data->file.getFullPathName() : missingFile, nullptr);
     state.setProperty ("count", chopCount.load(), nullptr);
-    state.setProperty ("grid", gridMode.load(), nullptr);
+    state.setProperty ("mode", (int) mode.load(), nullptr);
+    {
+        const juce::SpinLock::ScopedLockType sl (lock);
+        state.setProperty ("division", (int) division, nullptr);
+        state.setProperty ("bpm", bpm, nullptr);
+        state.setProperty ("gridOrigin", gridOrigin, nullptr);
+        juce::StringArray t;
+        for (auto x : taps) t.add (juce::String (x));
+        state.setProperty ("taps", t.joinIntoString (","), nullptr);
+    }
     {
         const auto view = getView();
         state.setProperty ("viewStart", view.first, nullptr);
@@ -447,12 +698,23 @@ void CatnipProcessor::setStateInformation (const void* data, int sizeInBytes)
     }
 
     chopCount = (int) state.getProperty ("count", 16) <= 8 ? 8 : 16;
-    gridMode = (bool) state.getProperty ("grid", false);
+    mode = (ChopMode) juce::jlimit (0, 2, (int) state.getProperty ("mode", 0));
 
     const juce::File file (state.getProperty ("file").toString());
     juce::String error;
     if (file.existsAsFile() && loadFile (file, error))
     {
+        {
+            const juce::SpinLock::ScopedLockType sl (lock);
+            division = (Division) juce::jlimit (0, 2, (int) state.getProperty ("division", 0));
+            if (state.hasProperty ("bpm")) bpm = juce::jlimit (40.0, 250.0, (double) state.getProperty ("bpm"));
+            if (state.hasProperty ("gridOrigin")) gridOrigin = (juce::int64) state.getProperty ("gridOrigin");
+            juce::StringArray t;
+            t.addTokens (state.getProperty ("taps").toString(), ",", {});
+            taps.clear();
+            for (auto& x : t) if (x.isNotEmpty()) taps.push_back (x.getLargeIntValue());
+            rechop();
+        }
         const auto savedLength = (juce::int64) state.getProperty ("viewLength", 0);
         if (savedLength > 0)
             setView ((juce::int64) state.getProperty ("viewStart", 0), savedLength);
@@ -460,7 +722,7 @@ void CatnipProcessor::setStateInformation (const void* data, int sizeInBytes)
         // restore hand-edited chop points if they still fit the file
         juce::StringArray parts;
         parts.addTokens (state.getProperty ("bounds").toString(), ",", {});
-        if (parts.size() == chopCount.load() + 1)
+        if (parts.size() >= 2)
         {
             std::vector<juce::int64> restored;
             for (auto& s : parts) restored.push_back (s.getLargeIntValue());
@@ -475,7 +737,7 @@ void CatnipProcessor::setStateInformation (const void* data, int sizeInBytes)
         missingFile = file.getFullPathName();
     }
 
-    selectedChop = juce::jlimit (0, chopCount.load() - 1, (int) state.getProperty ("selected", 0));
+    selectedChop = juce::jlimit (0, juce::jmax (0, getNumChops() - 1), (int) state.getProperty ("selected", 0));
     sendChangeMessage();
 }
 

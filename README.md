@@ -9,10 +9,15 @@ Sample reinziehen → Catnip erkennt die Transienten und legt automatisch 16 (od
 | Was | Wie |
 |---|---|
 | Sample laden | Datei aufs Plugin ziehen, oder Ordner-Symbol oben rechts (WAV, AIFF, MP3, FLAC, OGG) |
-| Chops | Automatisch nach Transienten. **GRID** = gleich lange Stücke. **8 / 16** = Anzahl |
+| Chop-Modus **TRANSIENT** | Chops automatisch auf den stärksten Schlägen. Die Schläge sind im Display als ▼ markiert |
+| Chop-Modus **TAKT** | Chops auf dem Taktraster ab der ersten „1“: **1 TAKT**, **½ TAKT** oder **SCHLAG** pro Chop. Tempo wird erkannt; mit − / + / ½× / 2× oder durch Ziehen am BPM-Feld korrigieren, Doppelklick = erkanntes Tempo. Eine Linie im Display ziehen verschiebt das ganze Raster |
+| Chop-Modus **TAP** | Leertaste (oder „TAPPEN STARTEN“) spielt das Sample ab – jeder Tastendruck auf eine Pad-Taste setzt dort einen Chop. Tipps rasten auf den nächsten Schlag ein. Leertaste = Stopp, LÖSCHEN = neu anfangen |
+| Leertaste | Ausschnitt anhören / stoppen (im TAP-Modus: Tappen starten / stoppen) |
+| MAX. CHOPS | 8 oder 16 |
+| BPM | Wird im Display rechts unten angezeigt |
 | Zoom (großes Rad) | Rad drehen = ins Sample hineinzoomen; die Chops werden nur im sichtbaren Ausschnitt neu gesetzt. Gezoomt wird um den gewählten Chop. Doppelklick = ganzes Sample |
 | Ausschnitt verschieben | In der Übersichtsleiste unten im Display klicken/ziehen, oder über dem Display scrollen |
-| Chop-Grenze verschieben | Im Display auf eine gestrichelte Linie zeigen und ziehen |
+| Chop-Grenze verschieben | Im Display auf eine gestrichelte Linie zeigen und ziehen – rastet auf den nächsten Schlag ein |
 | Chop anhören | Im Display auf den Chop klicken oder Pad klicken |
 | Tastatur | `1 2 3 4` = Pad 13–16 · `Q W E R` = Pad 9–12 · `A S D F` = Pad 5–8 · `Y/Z X C V` = Pad 1–4 |
 | MIDI | Pad 1 = Note 36 (C1), chromatisch aufwärts bis Pad 16 |
