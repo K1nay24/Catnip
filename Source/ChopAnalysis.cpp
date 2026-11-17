@@ -429,4 +429,23 @@ namespace catnip
             bounds[k] = best;
         }
     }
+
+    juce::int64 snapTarget (const std::vector<Onset>& byTime, juce::int64 tap, double sampleRate)
+    {
+        const double back = 0.15 * sampleRate, ahead = 0.04 * sampleRate;
+        const double sigmaBack = back * 0.6, sigmaAhead = ahead * 0.6;
+        auto it = std::lower_bound (byTime.begin(), byTime.end(), tap - (juce::int64) back,
+                                    [] (const Onset& o, juce::int64 p) { return o.sample < p; });
+        juce::int64 best = -1;
+        double bestScore = 0.0;
+        for (; it != byTime.end() && (double) (it->sample - tap) <= ahead; ++it)
+        {
+            const double d = (double) (it->sample - tap);
+            if (d < -back) continue;
+            const double sigma = d < 0.0 ? sigmaBack : sigmaAhead;
+            const double score = (double) std::max (0.0f, it->strength) * std::exp (-(d * d) / (2.0 * sigma * sigma));
+            if (score > bestScore) { bestScore = score; best = it->sample; }
+        }
+        return best;
+    }
 }

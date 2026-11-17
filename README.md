@@ -2,31 +2,32 @@
 
 Ein minimalistischer Chop-Sampler als Plugin für **macOS** (AU, VST3, Standalone) und **Windows** (VST3, Standalone).
 
-Sample reinziehen → Catnip erkennt die Transienten und legt automatisch 16 (oder 8) Chops auf die Pads → mit Maus, MIDI-Keyboard oder Computertastatur spielen.
+Sample reinziehen → **TAP** drücken (oder Leertaste) → beim Mithören auf die Pad-Tasten tippen. Jeder Tipp wird ein Chop. Danach zieht **SNAP** die Chops Stück für Stück auf den passendsten, stärksten Schlag in der Nähe.
 
 ## Bedienung
 
 | Was | Wie |
 |---|---|
-| Sample laden | Datei aufs Plugin ziehen, oder Ordner-Symbol oben rechts (WAV, AIFF, MP3, FLAC, OGG) |
-| Chop-Modus **TRANSIENT** | Chops automatisch auf den stärksten Schlägen. Die Schläge sind im Display als ▼ markiert |
-| Chop-Modus **TAKT** | Chops auf dem Taktraster ab der ersten „1“: **1 TAKT**, **½ TAKT** oder **SCHLAG** pro Chop. Tempo wird erkannt; mit − / + / ½× / 2× oder durch Ziehen am BPM-Feld korrigieren, Doppelklick = erkanntes Tempo. Eine Linie im Display ziehen verschiebt das ganze Raster |
-| Chop-Modus **TAP** | Leertaste (oder „TAPPEN STARTEN“) spielt das Sample ab – jeder Tastendruck auf eine Pad-Taste setzt dort einen Chop. Tipps rasten auf den nächsten Schlag ein. Leertaste = Stopp, LÖSCHEN = neu anfangen |
-| Leertaste | Ausschnitt anhören / stoppen (im TAP-Modus: Tappen starten / stoppen) |
-| MAX. CHOPS | 8 oder 16 |
-| BPM | Wird im Display rechts unten angezeigt |
-| Zoom (großes Rad) | Rad drehen = ins Sample hineinzoomen; die Chops werden nur im sichtbaren Ausschnitt neu gesetzt. Gezoomt wird um den gewählten Chop. Doppelklick = ganzes Sample |
-| Ausschnitt verschieben | In der Übersichtsleiste unten im Display klicken/ziehen, oder über dem Display scrollen |
-| Chop-Grenze verschieben | Im Display auf eine gestrichelte Linie zeigen und ziehen – rastet auf den nächsten Schlag ein |
-| Chop anhören | Im Display auf den Chop klicken oder Pad klicken |
+| Sample laden | Datei aufs Plugin ziehen oder ins leere Display klicken (WAV, AIFF, MP3, FLAC, OGG) |
+| **TAP** / Leertaste | Macht alles stumm und spielt den sichtbaren Teil ab. Jede Pad-Taste (oder Pad-Klick) setzt dort einen Chop. Der erste Tipp ersetzt die alten Chops. Endet nach 16 Chops, am Ende des Samples oder mit TAP/Leertaste |
+| **SNAP** (Regler) | 0 % = Chops genau dort, wo getippt wurde. Aufdrehen zieht jeden Chop allmählich zum besten Schlag in der Nähe (bis 150 ms zurück, 40 ms nach vorn; laute Schläge zählen mehr, nähere auch). ▲ unten im Display = Ziel, gestrichelt = Tipp |
+| **AUF SCHLAG** | SNAP auf 100 %, nochmal = zurück auf den vorherigen Wert |
+| Chop verschieben | Im Display eine Chop-Linie anfassen und ziehen (SNAP zieht weiter mit) |
+| **PITCH** | Gilt fürs ganze Sample, in Halbtönen (SHIFT beim Drehen = Cent). Wie bei der MPC ändert sich das Tempo mit – das Display zeigt das neue BPM, das du in der DAW einstellst/aufnimmst |
+| **DAW SYNC** | AN: das Sample läuft immer im Tempo der DAW (Time-Stretch, bei großem Abstand halbes/doppeltes Tempo). PITCH ändert dann nur noch die Tonhöhe |
+| **ZOOM** | In den Ausschnitt um den gewählten Chop hineinzoomen (auch Mausrad über dem Display). TAP und PLAY spielen nur den sichtbaren Teil |
+| **VOLUME** | Gesamtlautstärke |
+| REVERSE / GATE | Für den gewählten Chop: rückwärts / spielt nur solange gedrückt |
+| PLAY / STOP | Sichtbaren Teil anhören / alles stoppen (auch ESC) |
+| UNDO / CLEAR | Letzte Änderung zurück (auch Cmd/Strg+Z) / alle Chops löschen |
+| **ZUR DAW** | Taste in eine Spur ziehen: alle Chops als WAVs, mit Pitch, Sync und Reverse. Klick = Ordner öffnen. Der Dateiname enthält das BPM |
 | Tastatur | `1 2 3 4` = Pad 13–16 · `Q W E R` = Pad 9–12 · `A S D F` = Pad 5–8 · `Y/Z X C V` = Pad 1–4 |
 | MIDI | Pad 1 = Note 36 (C1), chromatisch aufwärts bis Pad 16 |
 | Abspielen | Ein neuer Chop schneidet den vorherigen ab – Chops überlappen nie |
-| Pro Chop | PITCH (±12 Halbtöne), DECAY (wie viel vom Chop spielt), LEVEL, REVERSE, ONE-SHOT/GATE. Doppelklick auf einen Regler = zurücksetzen |
-| In die DAW | Den Button **CHOPS ZUR DAW ZIEHEN** in die Spur ziehen – alle Chops landen als einzelne WAVs |
-| Größe | Fenster unten rechts ziehen (75–200 %) |
+| Regler | Ziehen hoch/runter, Doppelklick = zurücksetzen |
+| Größe | Fenster unten rechts ziehen (60–150 %) |
 
-Das Projekt speichert den Pfad zum Sample, die Chop-Grenzen und alle Einstellungen. Wird die Datei verschoben, zeigt Catnip „DATEI NICHT GEFUNDEN“ – einfach neu laden.
+Das Projekt speichert den Pfad zum Sample, die Chops und alle Einstellungen. Wird die Datei verschoben, zeigt Catnip „DATEI FEHLT“ – einfach neu laden.
 
 **Tastatur in der DAW:** Einmal ins Plugin-Fenster klicken, damit es die Tasten bekommt. Manche DAWs fangen Tasten trotzdem ab (z. B. Ableton, wenn „Computer-MIDI-Keyboard“ aktiv ist) – dann dort ausschalten oder ein MIDI-Keyboard nutzen.
 

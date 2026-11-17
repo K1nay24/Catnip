@@ -3,147 +3,111 @@
 #include "PluginProcessor.h"
 #include <map>
 
-namespace catnip
-{
-    namespace colours
-    {
-        const juce::Colour cream     { 0xffE7E0D0 };
-        const juce::Colour line      { 0xffD3CAB6 };
-        const juce::Colour segment   { 0xffDCD4C2 };
-        const juce::Colour screw     { 0xffC9C0AC };
-        const juce::Colour text      { 0xff2B2A27 };
-        const juce::Colour muted     { 0xff5E594F };
-        const juce::Colour dark      { 0xff3A3936 };
-        const juce::Colour darkLip   { 0xff23221F };
-        const juce::Colour light     { 0xffEDE6D6 };
-        const juce::Colour lcd       { 0xffC5CDA8 };
-        const juce::Colour ink       { 0xff2E3A26 };
-        const juce::Colour accent    { 0xffE0592A };
-        const juce::Colour padBlack  { 0xff1F1F1E };
-        const juce::Colour padHit    { 0xff121211 };
-        const juce::Colour padLip    { 0xffCFC6B3 };
-        const juce::Colour emptyText { 0xff8C8576 };
-    }
-
-    struct Fonts
-    {
-        static Fonts& get();
-        juce::Font lcd (float h) const;
-        juce::Font regular (float h) const;
-        juce::Font semibold (float h) const;
-        juce::Font bold (float h, float tracking = 0.0f) const;
-
-    private:
-        Fonts();
-        juce::Typeface::Ptr vt, reg, semi, xbold;
-    };
-
-    class WheelLookAndFeel final : public juce::LookAndFeel_V4
-    {
-    public:
-        void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos,
-                               float startAngle, float endAngle, juce::Slider&) override;
-    };
-
-    class KnobLookAndFeel final : public juce::LookAndFeel_V4
-    {
-    public:
-        void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos,
-                               float startAngle, float endAngle, juce::Slider&) override;
-    };
-}
-
-/** The whole plugin face, laid out at 960 x 660 and scaled by the editor. */
+/** The whole hardware panel (1080 x 700 logical pixels), painted by hand. */
 class CatnipView final : public juce::Component,
-                         private juce::ChangeListener,
-                         private juce::Timer
+                         private juce::Timer,
+                         private juce::ChangeListener
 {
 public:
+    static constexpr int width = 1080, height = 700;
+
     explicit CatnipView (CatnipProcessor&);
     ~CatnipView() override;
 
     void paint (juce::Graphics&) override;
-    void resized() override;
     void mouseMove (const juce::MouseEvent&) override;
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
-    void loadFile (const juce::File&);
-    void openFileChooser();
-    void setDragOver (bool);
+    // called by the editor
     void padDown (int chop);
     void padUp (int chop);
-    void spacePressed();
-    bool tapKey();   // true if a tap was taken (TAP mode, running)
-
-    static constexpr int width = 960, height = 660;
+    void toggleTap();
+    bool tapKey();                 // a pad key while tapping sets a chop; true if it was used for that
+    void loadFile (const juce::File&);
+    void setDragOver (bool);
+    void stopEverything();
+    void undo();
 
 private:
-    void changeListenerCallback (juce::ChangeBroadcaster*) override;
+    enum class Knob { pitch = 0, snap, zoom, volume };
+    enum class Key { reverse = 0, gate, onBeat, sync, toDaw, play, stop, tap, undo, clear, count };
+
+    struct KeyInfo { Key id; const char* label; int variant; int icon; juce::Rectangle<int> face; };
+
     void timerCallback() override;
-    void syncKnobs();
-    void applyZoom();
-    double maxZoom() const;
-    juce::int64 selectedChopCentre() const;
-    void centreViewAt (float x);
-    const std::vector<float>& viewPeaks (const catnip::SampleData&, juce::int64 start, juce::int64 length);
-    void selectChop (int chop);
+    void changeListenerCallback (juce::ChangeBroadcaster*) override;
 
-    // layout helpers (all in view coordinates)
-    juce::Rectangle<float> lcdArea() const       { return { 20.0f, 72.0f, 920.0f, 232.0f }; }
-    juce::Rectangle<float> waveArea() const      { return { 39.0f, 115.0f, 882.0f, 134.0f }; }
-    juce::Rectangle<float> minimapArea() const   { return { 39.0f, 255.0f, 882.0f, 10.0f }; }
-    juce::Rectangle<float> padCell (int vis) const;
-    juce::Rectangle<float> padRect (int vis) const { return padCell (vis).withTrimmedTop (18.0f); }
-    juce::Rectangle<float> folderButton() const  { return { 900.0f, 8.0f, 40.0f, 40.0f }; }
-    juce::Rectangle<float> chooseButton() const  { return { 390.0f, 248.0f, 180.0f, 32.0f }; }
-    juce::Rectangle<float> modeButton (int i) const;
-    juce::Rectangle<float> countButton (int i) const;
-    juce::Rectangle<float> divisionButton (int i) const;
-    juce::Rectangle<float> bpmMinus() const   { return { 690.0f, 391.0f, 30.0f, 36.0f }; }
-    juce::Rectangle<float> bpmBox() const     { return { 724.0f, 388.0f, 96.0f, 42.0f }; }
-    juce::Rectangle<float> bpmPlus() const    { return { 824.0f, 391.0f, 30.0f, 36.0f }; }
-    juce::Rectangle<float> bpmHalf() const    { return { 864.0f, 391.0f, 36.0f, 36.0f }; }
-    juce::Rectangle<float> bpmDouble() const  { return { 904.0f, 391.0f, 36.0f, 36.0f }; }
-    juce::Rectangle<float> tapButton() const  { return { 420.0f, 388.0f, 170.0f, 42.0f }; }
-    juce::Rectangle<float> clearButton() const { return { 598.0f, 388.0f, 72.0f, 42.0f }; }
-    juce::Rectangle<float> reverseButton() const { return { 420.0f, 590.0f, 96.0f, 36.0f }; }
-    juce::Rectangle<float> gateButton() const    { return { 524.0f, 590.0f, 96.0f, 36.0f }; }
-    juce::Rectangle<float> exportButton() const  { return { 700.0f, 600.0f, 240.0f, 40.0f }; }
+    // layout
+    static juce::Rectangle<int> padCell (int visual);          // label + well
+    static juce::Rectangle<int> padFace (int visual);
+    static juce::Rectangle<float> knobCentreArea (int knob);   // whole knob widget (126 x 150)
+    static juce::Rectangle<int> displayRect() { return { 540, 62, 504, 160 }; }
+    static juce::Rectangle<int> screenRect() { return displayRect().reduced (5); }
+    static juce::Rectangle<int> waveRect() { return { screenRect().getX() + 12, screenRect().getY() + 34, 470, 88 }; }
+    const KeyInfo* keyAt (juce::Point<int>) const;
+    int knobAt (juce::Point<int>) const;
+    int padAt (juce::Point<int>) const;
 
-    void paintHeader (juce::Graphics&);
-    void paintLcd (juce::Graphics&);
-    void paintPads (juce::Graphics&);
-    void paintControls (juce::Graphics&);
-    void paintOverlay (juce::Graphics&);
+    // painting
+    void paintPanel (juce::Graphics&);
+    void paintPad (juce::Graphics&, int visual);
+    void paintKnob (juce::Graphics&, int knob);
+    void paintKey (juce::Graphics&, const KeyInfo&);
+    void paintDisplay (juce::Graphics&);
+    juce::Image renderScreen();                                // display contents incl. glow
+    const juce::Image& faceImage (const juce::String& id, int w, int h, std::function<void (juce::Graphics&, juce::Rectangle<float>)> fill,
+                                  const juce::Image& texture, juce::Point<int> offset, bool overlay, float opacity, float radius);
 
-    int boundaryAt (juce::Point<float>) const;
-    int chopAt (juce::Point<float>) const;
-    int padAt (juce::Point<float>) const;
+    // state helpers
+    float knobValue (int knob) const;                          // 0..1
+    void setKnobValue (int knob, float v, bool fine);
+    juce::String knobText (int knob) const;
+    bool keyActive (Key) const;
+    void pressKey (Key);
+    void setZoom (float z);
+    float currentZoom() const;
+    juce::String bpmLine() const;
+    void showMessage (const juce::String&);
+    void openFileChooser();
+    int chopLineAt (float x) const;                            // index of the chop line near x in the wave, or -1
+    juce::int64 sampleAtX (float x) const;
+    float xForSample (juce::int64 s) const;
+    const std::vector<std::pair<float, float>>& viewPeaks (const catnip::SampleData&, juce::int64 start, juce::int64 length);
 
     CatnipProcessor& proc;
-    catnip::KnobLookAndFeel knobLook;
-    catnip::WheelLookAndFeel wheelLook;
-    juce::Slider pitch, decay, level, zoom;
-    juce::int64 zoomAnchor = -1;
-    std::array<bool, catnip::maxChops> held {};
-    const catnip::SampleData* cachedSample = nullptr;
-    juce::int64 cachedStart = -1, cachedLength = -1;
-    std::vector<float> cachedPeaks;
-    bool draggingMinimap = false, draggingBpm = false, wasPlaying = false;
-    double bpmDragStart = 120.0;
-    juce::int64 dragBoundStart = 0, dragOriginStart = 0;
-    juce::Image mascot;
-    std::unique_ptr<juce::FileChooser> chooser;
+    juce::Typeface::Ptr vt, reg, semi, xbold;
+    juce::Font font (juce::Typeface::Ptr, float size) const;
 
-    std::array<int, catnip::maxChops> seenHits {};
-    std::array<juce::uint32, catnip::maxChops> flashUntil {};
-    int mousePad = -1, mouseChop = -1, dragBound = -1, hoverBound = -1;
-    bool dragOver = false, exportStarted = false;
-    juce::String error;
+    juce::Image logo, texPlastic, texPad, texKey, background;
+    std::map<juce::String, juce::Image> faceCache;
+    juce::Image knobFace, knobCap;
+
+    std::vector<KeyInfo> keys;
+    std::array<int, catnip::maxChops> lastHits {};
+    std::array<double, catnip::maxChops> flashUntil {};
+    std::array<bool, catnip::maxChops> held {};
+
+    // mouse
+    int mousePad = -1, dragKnob = -1, dragLine = -1, hoverLine = -1;
+    const KeyInfo* pressedKey = nullptr;
+    float dragStartValue = 0.0f;
+    bool lineEditStarted = false, exportStarted = false, dragOver = false;
+
+    // display cache
+    juce::Image screenImage;
+    juce::String screenSignature;
+    const catnip::SampleData* peaksSample = nullptr;
+    juce::int64 peaksStart = -1, peaksLength = -1;
+    std::vector<std::pair<float, float>> peaks;
+
+    juce::String message, lastSig;
+    double messageUntil = 0.0;
+    std::unique_ptr<juce::FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CatnipView)
 };
@@ -155,10 +119,8 @@ public:
     explicit CatnipEditor (CatnipProcessor&);
     ~CatnipEditor() override = default;
 
-    void paint (juce::Graphics&) override {}
     void resized() override;
     void parentHierarchyChanged() override;
-
     bool keyPressed (const juce::KeyPress&) override;
     bool keyStateChanged (bool isKeyDown) override;
 
@@ -167,9 +129,12 @@ public:
     void fileDragExit (const juce::StringArray&) override { view.setDragOver (false); }
     void filesDropped (const juce::StringArray&, int, int) override;
 
+    CatnipView& getView() { return view; }
+
 private:
+    CatnipProcessor& proc;
     CatnipView view;
-    std::map<int, juce::juce_wchar> heldKeys;   // visual pad index -> character
+    std::map<int, juce::juce_wchar> heldKeys;   // visual pad -> key character
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CatnipEditor)
 };

@@ -10,14 +10,10 @@ namespace catnip
 {
     constexpr int maxChops = 16;
     constexpr int firstNote = 36;   // MIDI C1 = chop 1 (pad 1)
-    constexpr int numPeaks = 160;   // waveform bars in the display
 
-    /** Per-chop settings. Written on the message thread, read on the audio thread. */
-    struct ChopParams
+    /** Per-chop switches. Written on the message thread, read on the audio thread. */
+    struct ChopFlags
     {
-        std::atomic<float> pitch { 0.0f };    // semitones, -12..+12
-        std::atomic<float> decay { 1.0f };    // fraction of the chop that plays, 0.05..1
-        std::atomic<float> level { 0.8f };    // linear gain, 0..1
         std::atomic<bool> reverse { false };
         std::atomic<bool> gate { false };     // true: plays only while held
     };
@@ -29,12 +25,44 @@ namespace catnip
         juce::File file;
         Analysis analysis;
     };
-}
 
-namespace catnip
-{
-    enum class ChopMode { transient = 0, bars = 1, tap = 2 };
-    enum class Division { bar = 0, half = 1, beat = 2 };
+    /** The tapped chops: raw tap positions plus where the last chop ends. */
+    struct TapSet
+    {
+        std::array<juce::int64, maxChops> raw {};      // where the user tapped / dragged to
+        std::array<juce::int64, maxChops> target {};   // where SNAP pulls each one (-1: no hit nearby)
+        int count = 0;
+        juce::int64 end = 0;                           // end of the last chop
+    };
+
+    /** Chop starts after SNAP: raw + (target - raw) * snap, kept in order with a minimum gap.
+        bounds gets count + 1 entries (the last one is the end). Allocation-free, safe on the audio thread. */
+    int computeBounds (const TapSet& taps, float snap, std::array<juce::int64, maxChops + 1>& bounds);
+
+    /** Plays one chop (or the preview) by resampling or, with DAW SYNC, by granular time-stretch. */
+    struct Voice
+    {
+        bool active = false, releasing = false, reverse = false;
+        int chop = -1;
+        juce::int64 start = 0, length = 0;            // source region
+        double pos = 0.0;                             // analysis position in the region (source samples)
+        double tempoStep = 1.0, pitchStep = 1.0;      // source samples per output sample
+        bool stretch = false;
+        double grainLen = 2048.0;                     // output samples
+        double grainPos[2] {}, grainPhase[2] {};
+        float gain = 1.0f, attack = 0.0f, attackStep = 1.0f, release = 1.0f, releaseStep = 0.0f;
+        double fadeLen = 64.0;                        // source samples faded at the end
+
+        void begin (juce::int64 regionStart, juce::int64 regionLength, double tempo, double pitch,
+                    double outRate, bool rev, float g);
+        void beginRelease (double outRate, double seconds);
+        /** Follows a pitch / sync change while the voice plays. */
+        void setRates (double tempo, double pitch);
+        /** Adds numSamples to out (from startSample). Returns false once the voice has finished. */
+        bool render (const juce::AudioBuffer<float>& src, juce::AudioBuffer<float>& out, int startSample, int numSamples);
+    private:
+        float read (const juce::AudioBuffer<float>& src, int channel, double p) const;
+    };
 }
 
 class CatnipProcessor final : public juce::AudioProcessor,
@@ -69,51 +97,55 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
-    // Message-thread API used by the editor
+    // ---- sample --------------------------------------------------------------------------
     bool loadFile (const juce::File& file, juce::String& error);
     std::shared_ptr<const catnip::SampleData> getSample() const;
-    std::vector<juce::int64> getBounds() const;
-    void setBound (int index, juce::int64 position);
+    juce::String getMissingFileName() const { return missingFile; }
 
-    /** The zoom window: chops are only placed inside [start, start + length). */
+    // ---- chops (all tapped) --------------------------------------------------------------
+    catnip::TapSet getTaps() const;
+    std::vector<juce::int64> getBounds() const;          // chop starts after SNAP + end
+    int getNumChops() const;
+    void beginEdit();                                    // remember the chops for UNDO (call once per drag)
+    void moveTap (int index, juce::int64 position);      // drag a chop on the screen
+    void clearTaps();
+    bool undo();
+    bool canUndo() const;
+    void snapAllToHits();                                // AUF SCHLAG: SNAP to 100 % (again: back)
+
+    // ---- transport -----------------------------------------------------------------------
+    void play();                                         // listen to the visible part
+    void stopAll();
+    void startTapping();                                 // silences everything, plays, pads set chops
+    void stopTapping();
+    bool isTapping() const noexcept { return tapping.load(); }
+    bool isPreviewing() const noexcept { return previewPosition.load() >= 0 || previewRequest.load() >= 0; }
+    juce::int64 getPreviewPosition() const noexcept { return previewPosition.load(); }
+    bool isFreshPass() const;                            // tapping, but nothing tapped yet in this pass
+    int tap();                                           // sets a chop at the play position, returns its index or -1
+    int addTapAt (juce::int64 position);
+
+    // ---- view (zoom) ---------------------------------------------------------------------
     std::pair<juce::int64, juce::int64> getView() const;
     void setView (juce::int64 start, juce::int64 length);
     juce::int64 minViewLength() const;
 
-    int getChopCount() const noexcept { return chopCount.load(); }   // 8 or 16: the most chops
-    void setChopCount (int newCount);
-    int getNumChops() const;                                        // chops that exist right now
+    // ---- tempo ---------------------------------------------------------------------------
+    double getSampleBpm() const;                         // detected tempo of the file, 0 if unknown
+    double getHostBpm() const noexcept { return hostBpm.load(); }   // 0 if the host gives none
+    double getPitchSemitones() const noexcept { return pitchParam->load(); }
+    bool isSynced() const noexcept { return syncParam->load() > 0.5f; }
+    /** Tempo the sample plays at right now (what to set / record in the DAW). */
+    double getPlaybackBpm() const;
+    /** Source-samples-per-sample factors for tempo and pitch (1 = original). */
+    std::pair<double, double> getRatios() const;
 
-    catnip::ChopMode getMode() const noexcept { return mode.load(); }
-    void setMode (catnip::ChopMode);
-    catnip::Division getDivision() const noexcept { return division; }
-    void setDivision (catnip::Division);
+    catnip::ChopFlags& getChopFlags (int index) { return flags[(size_t) juce::jlimit (0, catnip::maxChops - 1, index)]; }
 
-    double getBpm() const;
-    double getDetectedBpm() const;
-    void setBpm (double);
-    void resetBpm();                       // back to the detected tempo and bar 1
-    void shiftGrid (juce::int64 delta);    // move the bar grid (TAKT mode)
-    juce::int64 getGridOrigin() const;
-
-    // Preview playback of the visible window (space bar) and live tapping of chops (TAP mode)
-    void startPreview (juce::int64 fromSample = -1);
-    void stopPreview();
-    bool isPreviewing() const noexcept { return previewPosition.load() >= 0 || previewStartRequest.load() >= 0; }
-    juce::int64 getPreviewPosition() const noexcept { return previewPosition.load(); }
-    void startTapping();
-    bool isTapping() const noexcept { return tapping.load(); }
-    int tap();                                   // sets a chop at the play position; returns its index or -1
-    int addTapAt (juce::int64 position);         // same, at a given sample (snaps to the nearest hit)
-    void clearTaps();
-
-    catnip::ChopParams& getChopParams (int index) { return chops[(size_t) juce::jlimit (0, catnip::maxChops - 1, index)]; }
-
+    /** Renders every chop with pitch, sync and reverse applied to WAV files (for dragging into the DAW). */
     juce::StringArray exportChopsToTempFiles();
 
-    juce::String getMissingFileName() const { return missingFile; }
-
-    /** Voices that are sounding and not fading out (for tests). Audio-thread state, so only call when no audio runs. */
+    /** Voices that are sounding and not fading out (for tests). Only call while no audio runs. */
     int getActiveVoiceCount() const noexcept;
 
     juce::MidiKeyboardState keyboardState;
@@ -122,53 +154,38 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
 private:
-    struct Preview
-    {
-        bool active = false, releasing = false;
-        double position = 0.0, increment = 1.0;
-        juce::int64 end = 0;
-        float attack = 0.0f, release = 1.0f, releaseStep = 0.0f;
-    };
-
-    struct Voice
-    {
-        bool active = false, releasing = false, reverse = false;
-        int chop = -1;
-        juce::int64 start = 0, end = 0;
-        double played = 0.0, total = 0.0, increment = 1.0, fadeLen = 1.0;
-        float gain = 0.0f, attack = 0.0f, attackStep = 1.0f, release = 1.0f, releaseStep = 0.0f;
-    };
-
-    void rechop();                 // call with lock held or before audio starts
     void startVoice (int chop, float velocity);
     void stopVoice (int chop);
-    void renderVoices (juce::AudioBuffer<float>& out, int startSample, int numSamples);
-    void renderPreview (juce::AudioBuffer<float>& out);
-    double samplesPerChop() const;   // TAKT mode, lock held
+    void killAll();                                      // audio thread: everything fades out (4 ms)
+    void refreshTargets();                               // lock held
+    void pushUndo();                                     // lock held
+    void changed() { sendChangeMessage(); }
+    std::pair<double, double> ratiosLocked() const;    // lock held
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
     mutable juce::SpinLock lock;
-    std::shared_ptr<catnip::SampleData> sample;
-    std::vector<juce::int64> bounds;
-    juce::int64 viewStart = 0, viewLength = 0;
-    std::array<catnip::ChopParams, catnip::maxChops> chops;
-    std::array<Voice, 8> voices;   // one sounding chop at a time; extra slots only hold fade-outs
+    std::shared_ptr<catnip::SampleData> sample;          // guarded by lock
+    catnip::TapSet taps;                                 // guarded by lock
+    std::vector<catnip::TapSet> undoStack;               // guarded by lock
+    juce::int64 viewStart = 0, viewLength = 0;           // guarded by lock
+    int tapsThisPass = 0;                                // guarded by lock
+    float snapBeforeFull = 0.5f;
 
-    std::atomic<int> chopCount { 16 };
-    std::atomic<catnip::ChopMode> mode { catnip::ChopMode::transient };
-    catnip::Division division = catnip::Division::bar;   // guarded by lock
-    double bpm = 120.0;                                  // guarded by lock
-    juce::int64 gridOrigin = 0;                          // guarded by lock: sample of bar 1
-    std::vector<juce::int64> taps;                       // guarded by lock: tapped chop starts
-    int tapsThisPass = 0;
+    std::array<catnip::ChopFlags, catnip::maxChops> flags;
+    std::array<catnip::Voice, 8> voices;                 // audio thread: one sounding chop, the rest fade out
+    catnip::Voice preview;                               // audio thread
 
-    Preview preview;                                     // audio thread
-    std::atomic<juce::int64> previewStartRequest { -1 }, previewEndRequest { 0 }, previewPosition { -1 };
-    std::atomic<bool> previewStopRequest { false }, tapping { false };
+    std::atomic<juce::int64> previewRequest { -1 }, previewEnd { 0 }, previewPosition { -1 };
+    std::atomic<bool> stopRequest { false }, tapping { false };
+    std::atomic<double> hostBpm { 0.0 };
     double hostRate = 44100.0;
     juce::String missingFile;
+    float lastGain = 1.0f;
     std::atomic<float>* volumeParam = nullptr;
+    std::atomic<float>* pitchParam = nullptr;
+    std::atomic<float>* snapParam = nullptr;
+    std::atomic<float>* syncParam = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CatnipProcessor)
 };

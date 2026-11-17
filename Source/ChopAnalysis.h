@@ -37,6 +37,12 @@ namespace catnip
     /** Closest transient to `position` within [position - before, position + after], or -1. */
     juce::int64 nearestOnset (const std::vector<Onset>& byTime, juce::int64 position, juce::int64 before, juce::int64 after);
 
+    /** Where SNAP pulls a tap: the most plausible, strongest transient near it, or -1 if none.
+        People tap a little late, so the search reaches 150 ms back but only 40 ms ahead. Each transient
+        is scored by strength x closeness (Gaussian, wider behind the tap): a loud kick slightly earlier
+        beats a quiet hat right on the tap, and between equal hits the closer one wins. */
+    juce::int64 snapTarget (const std::vector<Onset>& byTime, juce::int64 tap, double sampleRate);
+
     /** Moves each inner boundary back to the nearest rising zero crossing (never later), to avoid clicks. */
     void snapToZeroCrossings (std::vector<juce::int64>& bounds, const juce::AudioBuffer<float>& buffer, int searchRadius = 64);
 }

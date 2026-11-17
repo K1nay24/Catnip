@@ -46,7 +46,10 @@ juce_add_binary_data(CatnipData SOURCES
     resources/Archivo-Regular.ttf
     resources/Archivo-SemiBold.ttf
     resources/Archivo-ExtraBold.ttf
-    resources/kinai.png)
+    resources/kinai.png
+    resources/tex_plastic.jpg
+    resources/tex_pad.jpg
+    resources/tex_key.jpg)
 
 target_sources(Catnip PRIVATE
     Source/PluginProcessor.cpp
