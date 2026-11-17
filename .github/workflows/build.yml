@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      runner:
+        description: macOS runner label
+        default: macos-latest
 
 permissions:
   contents: write
@@ -17,7 +21,7 @@ jobs:
       matrix:
         include:
           - name: macOS
-            os: macos-latest
+            os: ${{ inputs.runner || 'macos-latest' }}
 
     steps:
       - uses: actions/checkout@v4
