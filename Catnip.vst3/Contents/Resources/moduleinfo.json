@@ -1,0 +1,48 @@
+{
+  "Name": "Catnip",
+  "Version": "0.1.0",
+  "Factory Info": {
+    "Vendor": "KINAI",
+    "URL": "",
+    "E-Mail": "",
+    "Flags": {
+      "Unicode": true,
+      "Classes Discardable": false,
+      "Component Non Discardable": false,
+    },
+  },
+  "Classes": [
+    {
+      "CID": "ABCDEF019182FAEB4B696E6143746E70",
+      "Category": "Audio Module Class",
+      "Name": "Catnip",
+      "Vendor": "KINAI",
+      "Version": "0.1.0",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": [
+        "Instrument",
+        "Sampler",
+      ],
+      "Class Flags": 2,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+      ],
+    },
+    {
+      "CID": "ABCDEF011234ABCD4B696E6143746E70",
+      "Category": "Component Controller Class",
+      "Name": "Catnip",
+      "Vendor": "KINAI",
+      "Version": "0.1.0",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": [
+        "Instrument",
+        "Sampler",
+      ],
+      "Class Flags": 2,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+      ],
+    },
+  ],
+}
