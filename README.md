@@ -17,6 +17,8 @@ Sample reinziehen → **TAP** drücken (oder Leertaste) → beim Mithören auf d
 | **DAW SYNC** | AN: das Sample läuft immer im Tempo der DAW (Time-Stretch, bei großem Abstand halbes/doppeltes Tempo). PITCH ändert dann nur noch die Tonhöhe |
 | **ZOOM** | In den Ausschnitt um den gewählten Chop hineinzoomen (auch Mausrad über dem Display). TAP und PLAY spielen nur den sichtbaren Teil |
 | **VOLUME** | Gesamtlautstärke |
+| **AGE** | Klang alter Sampler: CLEAN, 90s (12 Bit / 32 kHz, weich), SP-1200 (12 Bit / 26 kHz, Crunch), MPC60 (12 Bit / 40 kHz, warm gesättigt). Drehen, klicken oder direkt auf den Namen tippen. Die Waveform im Display wird passend gröber |
+| **TONE** | Low-Pass-Filter für alles (dumpfer, wärmer). Ganz rechts = offen |
 | REVERSE / GATE | Für den gewählten Chop: rückwärts / spielt nur solange gedrückt |
 | PLAY / STOP | Sichtbaren Teil anhören / alles stoppen (auch ESC) |
 | UNDO / CLEAR | Letzte Änderung zurück (auch Cmd/Strg+Z) / alle Chops löschen |
@@ -24,7 +26,7 @@ Sample reinziehen → **TAP** drücken (oder Leertaste) → beim Mithören auf d
 | Tastatur | `1 2 3 4` = Pad 13–16 · `Q W E R` = Pad 9–12 · `A S D F` = Pad 5–8 · `Y/Z X C V` = Pad 1–4 |
 | MIDI | Pad 1 = Note 36 (C1), chromatisch aufwärts bis Pad 16 |
 | Abspielen | Ein neuer Chop schneidet den vorherigen ab – Chops überlappen nie |
-| Regler | Ziehen hoch/runter, Doppelklick = zurücksetzen |
+| Regler | Ziehen hoch/runter, Doppelklick = zurücksetzen. Beim Drehen zeigt das Display den Wert groß an |
 | Größe | Fenster unten rechts ziehen (60–150 %) |
 
 Das Projekt speichert den Pfad zum Sample, die Chops und alle Einstellungen. Wird die Datei verschoben, zeigt Catnip „DATEI FEHLT“ – einfach neu laden.

@@ -11,6 +11,8 @@ static void check (bool ok, const char* what)
     if (! ok) ++failures;
 }
 
+static void check (bool ok, const juce::String& what) { check (ok, what.toRawUTF8()); }
+
 // 4 bars of a simple beat at the given tempo: kick on 1 and 3, snare on 2 and 4, hats on eighths
 static juce::File writeDrumLoop (double bpm, juce::Array<juce::int64>& beats)
 {
@@ -378,11 +380,89 @@ int main()
         std::cout << "     (measured " << freq << " Hz, max step " << maxJump << ")\n";
     }
 
+    // ---- AGE and TONE --------------------------------------------------------------------------
+    {
+        auto renderChop = [&] (int age, float tone)
+        {
+            CatnipProcessor pc;
+            pc.prepareToPlay (hostRate, 512);
+            pc.loadFile (loop, err);
+            for (auto t : { beats[0], beats[1], beats[2] }) { pc.startTapping(); pc.addTapAt (t); }
+            pc.stopTapping();
+            auto* pa = pc.apvts.getParameter ("age");
+            pa->setValueNotifyingHost (pa->convertTo0to1 ((float) age));
+            setParam (pc, "tone", tone);
+            juce::AudioBuffer<float> all (2, 512 * 50);
+            for (int b = 0; b < 50; ++b)
+            {
+                juce::AudioBuffer<float> blk (2, 512);
+                juce::MidiBuffer m; if (b == 0) m = note (0);
+                pc.processBlock (blk, m);
+                all.copyFrom (0, b * 512, blk, 0, 0, 512);
+                all.copyFrom (1, b * 512, blk, 1, 0, 512);
+            }
+            return all;
+        };
+        auto rms = [] (const juce::AudioBuffer<float>& b) { return b.getRMSLevel (0, 0, b.getNumSamples()); };
+        auto hf = [] (const juce::AudioBuffer<float>& b)
+        {
+            double e = 0.0;
+            for (int i = 1; i < b.getNumSamples(); ++i) { const double d = b.getSample (0, i) - b.getSample (0, i - 1); e += d * d; }
+            return std::sqrt (e / b.getNumSamples());
+        };
+        const auto clean = renderChop (0, 1.0f);
+        check (rms (clean) > 0.01f, "chop renders for AGE tests");
+        for (int age = 1; age < 4; ++age)
+        {
+            const auto aged = renderChop (age, 1.0f);
+            const float db = juce::Decibels::gainToDecibels (rms (aged) / rms (clean));
+            juce::AudioBuffer<float> diff (aged);
+            diff.addFrom (0, 0, clean, 0, 0, clean.getNumSamples(), -1.0f);
+            check (std::abs (db) < 3.0f, juce::String ("AGE ") + catnip::ageName (age) + ": about as loud as CLEAN (" + juce::String (db, 1) + " dB)");
+            check (rms (diff) > rms (clean) * 0.02f, juce::String ("AGE ") + catnip::ageName (age) + ": audibly changes the sound");
+        }
+        const auto dark = renderChop (0, 0.25f);
+        check (hf (dark) < hf (clean) * 0.35, "TONE turned down removes the highs (low-pass)");
+        check (rms (dark) > rms (clean) * 0.3f, "TONE keeps the body of the sound");
+
+        // exported chops carry the colour too
+        setParam (proc, "pitch", 0.0f);
+        auto* pa = proc.apvts.getParameter ("age");
+        pa->setValueNotifyingHost (pa->convertTo0to1 (2.0f));
+        const auto aged = proc.exportChopsToTempFiles();
+        pa->setValueNotifyingHost (pa->convertTo0to1 (0.0f));
+        const auto plain = proc.exportChopsToTempFiles();
+        juce::AudioFormatManager fm; fm.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> ra (fm.createReaderFor (juce::File (aged[0]))), rp (fm.createReaderFor (juce::File (plain[0])));
+        juce::AudioBuffer<float> ba (2, 4000), bp (2, 4000);
+        ra->read (&ba, 0, 4000, 0, true, true); rp->read (&bp, 0, 4000, 0, true, true);
+        ba.addFrom (0, 0, bp, 0, 0, 4000, -1.0f);
+        check (ba.getRMSLevel (0, 0, 4000) > 1.0e-3f, "ZUR DAW renders the AGE sound into the WAVs");
+
+        pa->setValueNotifyingHost (pa->convertTo0to1 (3.0f));
+        setParam (proc, "tone", 0.4f);
+        juce::MemoryBlock mb; proc.getStateInformation (mb);
+        CatnipProcessor r2; r2.setStateInformation (mb.getData(), (int) mb.getSize());
+        check (r2.getAge() == 3 && std::abs (r2.getTone() - 0.4f) < 1e-3f, "AGE and TONE are saved with the project");
+        pa->setValueNotifyingHost (pa->convertTo0to1 (0.0f));
+        setParam (proc, "tone", 1.0f);
+    }
+
     // ---- pictures --------------------------------------------------------------------------------
     proc.setView (0, proc.getSample()->buffer.getNumSamples());
     setParam (proc, "snap", 0.6f);
     proc.selectedChop = 2;
     snapshot (proc, "02_chops.png");
+    {
+        auto* pa = proc.apvts.getParameter ("age");
+        pa->setValueNotifyingHost (pa->convertTo0to1 (2.0f));
+        setParam (proc, "tone", 0.55f);
+        renderPeak (proc, note (1), 1);
+        snapshot (proc, "02b_sp1200_glow.png", [] (CatnipEditor& e) { e.getView().padDown (4); });
+        snapshot (proc, "02c_overlay.png", [] (CatnipEditor& e) { e.getView().showKnobOverlayForTest (1); });
+        pa->setValueNotifyingHost (pa->convertTo0to1 (0.0f));
+        setParam (proc, "tone", 1.0f);
+    }
     proc.startTapping();
     renderPeak (proc, {}, 120);
     snapshot (proc, "03_tapping.png");

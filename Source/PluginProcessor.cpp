@@ -144,6 +144,8 @@ CatnipProcessor::CatnipProcessor()
     pitchParam = apvts.getRawParameterValue ("pitch");
     snapParam = apvts.getRawParameterValue ("snap");
     syncParam = apvts.getRawParameterValue ("sync");
+    ageParam = apvts.getRawParameterValue ("age");
+    toneParam = apvts.getRawParameterValue ("tone");
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout CatnipProcessor::createLayout()
@@ -155,6 +157,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout CatnipProcessor::createLayou
     layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "snap", 1 }, "Snap",
                                                              juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.5f));
     layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "sync", 1 }, "DAW Sync", false));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "age", 1 }, "Age",
+                                                              juce::StringArray { "Clean", "90s", "SP-1200", "MPC60" }, 0));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "tone", 1 }, "Tone",
+                                                             juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "volume", 1 }, "Volume",
                                                              juce::NormalisableRange<float> (-24.0f, 6.0f, 0.1f), 0.0f,
                                                              juce::AudioParameterFloatAttributes().withLabel ("dB")));
@@ -174,6 +180,7 @@ void CatnipProcessor::prepareToPlay (double sampleRate, int)
     for (auto& v : voices) v.active = false;
     preview.active = false;
     previewPosition = -1;
+    color.prepare (hostRate);
 }
 
 //==============================================================================
@@ -256,6 +263,7 @@ void CatnipProcessor::startVoice (int chop, float velocity)
     slot->begin (start, end - start, ratios.first * base, ratios.second * base, hostRate,
                  flags[(size_t) chop].reverse.load(), 0.35f + 0.65f * juce::jlimit (0.0f, 1.0f, velocity));
 
+    hitVelocity[(size_t) chop] = juce::jlimit (0.0f, 1.0f, velocity);
     hitCounters[(size_t) chop].fetch_add (1);
 }
 
@@ -354,6 +362,9 @@ void CatnipProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             }
         }
     }
+
+    // AGE + TONE colour everything that sounds
+    color.process (buffer, 0, buffer.getNumSamples(), getAge(), getTone());
 
     const auto target = juce::Decibels::decibelsToGain (volumeParam->load(), -60.0f);
     buffer.applyGainRamp (0, buffer.getNumSamples(), lastGain, target);
@@ -550,6 +561,7 @@ int CatnipProcessor::addTapAt (juce::int64 position)
         full = taps.count >= maxChops;
     }
     selectedChop = index;
+    hitVelocity[(size_t) index] = 1.0f;
     hitCounters[(size_t) index].fetch_add (1);
     if (full)
         stopTapping();
@@ -685,6 +697,10 @@ juce::StringArray CatnipProcessor::exportChopsToTempFiles()
             v.render (data->buffer, chop, written, block);
             written += block;
         }
+
+        ColorFx fx;                     // the chops sound exactly like in the plugin
+        fx.prepare (rate);
+        fx.process (chop, 0, juce::jmin (written, outLen), getAge(), getTone());
 
         auto out = dir.getChildFile (base + "_chop" + juce::String (i + 1).paddedLeft ('0', 2) + ".wav");
         std::unique_ptr<juce::OutputStream> stream = std::make_unique<juce::FileOutputStream> (out);

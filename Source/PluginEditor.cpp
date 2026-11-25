@@ -80,17 +80,17 @@ CatnipView::CatnipView (CatnipProcessor& p) : proc (p)
 
     // keys: chop row (light) and transport row (dark)
     const int chopX[5] = { 540, 642, 744, 847, 950 };
-    keys.push_back ({ Key::reverse, "REVERSE",    0, -1, { chopX[0], 424, 94, 44 } });
-    keys.push_back ({ Key::gate,    "GATE",       0, -1, { chopX[1], 424, 94, 44 } });
-    keys.push_back ({ Key::onBeat,  "AUF SCHLAG", 0, -1, { chopX[2], 424, 94, 44 } });
-    keys.push_back ({ Key::sync,    "DAW SYNC",   0, -1, { chopX[3], 424, 94, 44 } });
-    keys.push_back ({ Key::toDaw,   "ZUR DAW",    2,  5, { chopX[4], 424, 94, 44 } });
+    keys.push_back ({ Key::reverse, "REVERSE",    0, -1, { chopX[0], 496, 94, 44 } });
+    keys.push_back ({ Key::gate,    "GATE",       0, -1, { chopX[1], 496, 94, 44 } });
+    keys.push_back ({ Key::onBeat,  "AUF SCHLAG", 0, -1, { chopX[2], 496, 94, 44 } });
+    keys.push_back ({ Key::sync,    "DAW SYNC",   0, -1, { chopX[3], 496, 94, 44 } });
+    keys.push_back ({ Key::toDaw,   "ZUR DAW",    2,  5, { chopX[4], 496, 94, 44 } });
     const int tX[5] = { 540, 644, 748, 852, 956 };
-    keys.push_back ({ Key::play,  "PLAY",  1, 0, { tX[0], 524, 88, 56 } });
-    keys.push_back ({ Key::stop,  "STOP",  1, 1, { tX[1], 524, 88, 56 } });
-    keys.push_back ({ Key::tap,   "TAP",   2, 2, { tX[2], 524, 88, 56 } });
-    keys.push_back ({ Key::undo,  "UNDO",  1, 3, { tX[3], 524, 88, 56 } });
-    keys.push_back ({ Key::clear, "CLEAR", 1, 4, { tX[4], 524, 88, 56 } });
+    keys.push_back ({ Key::play,  "PLAY",  1, 0, { tX[0], 596, 88, 56 } });
+    keys.push_back ({ Key::stop,  "STOP",  1, 1, { tX[1], 596, 88, 56 } });
+    keys.push_back ({ Key::tap,   "TAP",   2, 2, { tX[2], 596, 88, 56 } });
+    keys.push_back ({ Key::undo,  "UNDO",  1, 3, { tX[3], 596, 88, 56 } });
+    keys.push_back ({ Key::clear, "CLEAR", 1, 4, { tX[4], 596, 88, 56 } });
 
     for (int i = 0; i < maxChops; ++i) lastHits[(size_t) i] = proc.hitCounters[(size_t) i].load();
 
@@ -120,14 +120,22 @@ void CatnipView::timerCallback()
         if (h != lastHits[(size_t) i])
         {
             lastHits[(size_t) i] = h;
-            flashUntil[(size_t) i] = now + 0.16;
+            hitTime[(size_t) i] = now;
             padsChanged = true;
         }
-        if (flashUntil[(size_t) i] > 0.0 && flashUntil[(size_t) i] < now)
-        {
-            flashUntil[(size_t) i] = 0.0;
-            padsChanged = true;
-        }
+    }
+    // pads keep glowing (fading out, held, or the pulse of the next tap)
+    bool anyGlow = proc.isTapping();
+    for (int i = 0; i < maxChops; ++i)
+        if (held[(size_t) i] || now - hitTime[(size_t) i] < 0.6) anyGlow = true;
+    if (anyGlow || glowing) padsChanged = true;
+    glowing = anyGlow;
+
+    if (overlayUntil > 0.0 && overlayUntil < now)
+    {
+        overlayUntil = 0.0;
+        overlayKnob = -1;
+        repaint (displayRect());
     }
     if (messageUntil > 0.0 && messageUntil < now)
     {
@@ -141,16 +149,15 @@ void CatnipView::timerCallback()
     sig << proc.getPitchSemitones() << "|" << proc.apvts.getRawParameterValue ("snap")->load() << "|"
         << proc.apvts.getRawParameterValue ("volume")->load() << "|" << (int) proc.isSynced() << "|"
         << proc.getHostBpm() << "|" << (int) proc.isTapping() << "|" << (int) proc.isPreviewing() << "|"
-        << proc.selectedChop.load();
-    if (padsChanged || sig != lastSig)
+        << proc.selectedChop.load() << "|" << proc.getAge() << "|" << proc.getTone();
+    if (sig != lastSig)
     {
         lastSig = sig;
         repaint();
+        return;
     }
-    else if (proc.isPreviewing())
-    {
-        repaint (displayRect());
-    }
+    if (padsChanged) repaint (juce::Rectangle<int> (20, 80, 480, 620));
+    if (proc.isPreviewing()) repaint (displayRect());
 }
 
 //==============================================================================
@@ -159,7 +166,7 @@ void CatnipView::timerCallback()
 juce::Rectangle<int> CatnipView::padCell (int visual)
 {
     const int col = visual % 4, row = visual / 4;
-    return { 36 + col * (104 + 12), 88 + row * (124 + 12), 104, 124 };
+    return { 36 + col * (104 + 12), 88 + row * (136 + 20), 104, 136 };
 }
 
 juce::Rectangle<int> CatnipView::padFace (int visual)
@@ -180,14 +187,28 @@ int CatnipView::padAt (juce::Point<int> p) const
     return -1;
 }
 
+juce::Point<float> CatnipView::knobCentre (int knob)
+{
+    if (knob == (int) Knob::tone) return { 1008.0f, 429.0f };
+    if (knob == (int) Knob::age)  return { 612.0f, 429.0f };
+    const auto a = knobCentreArea (knob);
+    return { a.getCentreX(), a.getY() + 60.0f };
+}
+
+float CatnipView::knobRadius (int knob)
+{
+    return knob >= (int) Knob::tone ? 27.0f : 40.0f;
+}
+
+juce::Rectangle<int> CatnipView::ageLabelRect (int mode)
+{
+    return { 648 + mode * 64, 408, 64, 40 };
+}
+
 int CatnipView::knobAt (juce::Point<int> p) const
 {
-    for (int k = 0; k < 4; ++k)
-    {
-        const auto a = knobCentreArea (k);
-        const juce::Point<float> c (a.getCentreX(), a.getY() + 60.0f);
-        if (c.getDistanceFrom (p.toFloat()) <= 40.0f) return k;
-    }
+    for (int k = 0; k < numKnobs; ++k)
+        if (knobCentre (k).getDistanceFrom (p.toFloat()) <= knobRadius (k)) return k;
     return -1;
 }
 
@@ -209,6 +230,8 @@ float CatnipView::knobValue (int knob) const
         case Knob::snap:   return proc.apvts.getRawParameterValue ("snap")->load();
         case Knob::zoom:   return currentZoom();
         case Knob::volume: return proc.apvts.getParameter ("volume")->getValue();
+        case Knob::tone:   return proc.getTone();
+        case Knob::age:    return (float) proc.getAge() / 3.0f;
     }
     return 0.0f;
 }
@@ -229,7 +252,10 @@ void CatnipView::setKnobValue (int knob, float v, bool fine)
         case Knob::snap:   proc.apvts.getParameter ("snap")->setValueNotifyingHost (v); break;
         case Knob::volume: proc.apvts.getParameter ("volume")->setValueNotifyingHost (v); break;
         case Knob::zoom:   setZoom (v); break;
+        case Knob::tone:   proc.apvts.getParameter ("tone")->setValueNotifyingHost (v); break;
+        case Knob::age:    setAge (juce::roundToInt (v * 3.0f)); return;
     }
+    showOverlay (knob);
     repaint();
 }
 
@@ -253,8 +279,37 @@ juce::String CatnipView::knobText (int knob) const
             return z < 1.05f ? juce::String ("ganzes Sample") : juce::String (z, 1) + juce::String (juce::CharPointer_UTF8 ("\xc3\x97"));
         }
         case Knob::volume: return juce::String (proc.apvts.getRawParameterValue ("volume")->load(), 1) + " dB";
+        case Knob::tone:
+        {
+            const float t = proc.getTone();
+            if (t >= 0.995f) return "offen";
+            const double hz = ColorFx::toneFrequency (t);
+            return hz < 1000.0 ? juce::String (juce::roundToInt (hz)) + " Hz" : juce::String (hz / 1000.0, 1) + " kHz";
+        }
+        case Knob::age:    return u8 (ageName (proc.getAge()));
     }
     return {};
+}
+
+void CatnipView::setAge (int mode)
+{
+    mode = juce::jlimit (0, 3, mode);
+    auto* p = proc.apvts.getParameter ("age");
+    if (mode != proc.getAge())
+    {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) mode));
+        p->endChangeGesture();
+    }
+    showOverlay ((int) Knob::age);
+    repaint();
+}
+
+void CatnipView::showOverlay (int knob)
+{
+    overlayKnob = knob;
+    overlayUntil = juce::Time::getMillisecondCounterHiRes() * 0.001 + 1.2;
+    repaint (displayRect());
 }
 
 float CatnipView::currentZoom() const
@@ -465,12 +520,11 @@ int CatnipView::chopLineAt (float x) const
     return best;
 }
 
-const std::vector<std::pair<float, float>>& CatnipView::viewPeaks (const SampleData& s, juce::int64 start, juce::int64 length)
+const std::vector<std::pair<float, float>>& CatnipView::viewPeaks (const SampleData& s, juce::int64 start, juce::int64 length, int bars)
 {
-    if (&s == peaksSample && start == peaksStart && length == peaksLength) return peaks;
-    peaksSample = &s; peaksStart = start; peaksLength = length;
+    if (&s == peaksSample && start == peaksStart && length == peaksLength && bars == peaksBars) return peaks;
+    peaksSample = &s; peaksStart = start; peaksLength = length; peaksBars = bars;
 
-    constexpr int bars = 150;
     peaks.assign (bars, { 0.0f, 0.0f });
     const auto& buf = s.buffer;
     const float norm = std::max (1.0e-4f, buf.getMagnitude (0, buf.getNumSamples()));
@@ -547,6 +601,7 @@ void CatnipView::paint (juce::Graphics& g)
 
     for (int v = 0; v < 16; ++v) paintPad (g, v);
     for (int k = 0; k < 4; ++k) paintKnob (g, k);
+    paintColorStrip (g);
     for (auto& k : keys) paintKey (g, k);
     paintDisplay (g);
 
@@ -603,12 +658,12 @@ void CatnipView::paintPanel (juce::Graphics&)
 
     // fine scratches and screws
     g.setColour (juce::Colours::white.withAlpha (0.35f));
-    for (auto l : { juce::Line<float> (612, 610, 670, 588), { 880, 92, 840, 122 }, { 140, 650, 210, 642 }, { 960, 640, 988, 600 }, { 520, 30, 564, 36 } })
+    for (auto l : { juce::Line<float> (612, 610, 670, 588), { 880, 92, 840, 122 }, { 140, 716, 210, 710 }, { 960, 640, 988, 600 }, { 520, 30, 564, 36 } })
         g.drawLine (l, 0.7f);
     g.setColour (juce::Colour (0xff3B342C).withAlpha (0.18f));
     for (auto l : { juce::Line<float> (700, 470, 790, 456), { 300, 668, 240, 678 }, { 1010, 330, 980, 376 }, { 60, 40, 100, 58 } })
         g.drawLine (l, 0.7f);
-    for (auto c : { juce::Point<float> (24, 24), { 1056, 24 }, { 24, 676 }, { 1056, 676 } })
+    for (auto c : { juce::Point<float> (24, 24), { 1056, 24 }, { 24, 748 }, { 1056, 748 } })
     {
         g.setColour (juce::Colour (0xffABA498)); g.fillEllipse (juce::Rectangle<float> (10, 10).withCentre (c));
         g.setColour (juce::Colour (0xff8E877B)); g.drawEllipse (juce::Rectangle<float> (10, 10).withCentre (c), 1.0f);
@@ -638,14 +693,14 @@ void CatnipView::paintPanel (juce::Graphics&)
     // pink rules
     g.setColour (pink);
     g.fillRect (124.0f, 44.0f, 876.0f, 2.0f);
-    g.fillRect (512.0f, 84.0f, 2.0f, 536.0f);
-    g.fillRect (36.0f, 636.0f, 1008.0f, 2.0f);
+    g.fillRect (512.0f, 84.0f, 2.0f, 608.0f);
+    g.fillRect (36.0f, 708.0f, 1008.0f, 2.0f);
 
     // groove between key rows
     g.setColour (juce::Colours::black.withAlpha (0.18f));
-    g.fillRect (540.0f, 486.0f, 504.0f, 2.0f);
+    g.fillRect (540.0f, 558.0f, 504.0f, 2.0f);
     g.setColour (juce::Colours::white.withAlpha (0.6f));
-    g.fillRect (540.0f, 488.0f, 504.0f, 1.0f);
+    g.fillRect (540.0f, 560.0f, 504.0f, 1.0f);
 
     // footer
     {
@@ -657,12 +712,12 @@ void CatnipView::paintPanel (juce::Graphics&)
             const auto t = juce::String::fromUTF8 (parts[i]);
             const float w = juce::GlyphArrangement::getStringWidth (g.getCurrentFont(), t);
             g.setColour (ink);
-            g.drawText (t, juce::Rectangle<float> (x, 652.0f, w + 4.0f, 16.0f), juce::Justification::centredLeft, false);
+            g.drawText (t, juce::Rectangle<float> (x, 724.0f, w + 4.0f, 16.0f), juce::Justification::centredLeft, false);
             x += w + 12.0f;
             if (i < 2)
             {
                 g.setColour (pink);
-                g.fillEllipse (x, 657.5f, 5.0f, 5.0f);
+                g.fillEllipse (x, 729.5f, 5.0f, 5.0f);
                 x += 17.0f;
             }
         }
@@ -671,10 +726,10 @@ void CatnipView::paintPanel (juce::Graphics&)
         {
             const float x0 = 1044.0f - 10.0f - (float) (3 - i) * 17.0f - 6.0f;
             juce::Path p;
-            p.startNewSubPath (x0 + 6.4f, 648.0f);
-            p.lineTo (x0 + 16.4f, 648.0f);
-            p.lineTo (x0 + 3.7f, 670.0f);
-            p.lineTo (x0 - 6.3f, 670.0f);
+            p.startNewSubPath (x0 + 6.4f, 720.0f);
+            p.lineTo (x0 + 16.4f, 720.0f);
+            p.lineTo (x0 + 3.7f, 742.0f);
+            p.lineTo (x0 - 6.3f, 742.0f);
             p.closeSubPath();
             g.fillPath (p);
         }
@@ -700,6 +755,41 @@ void CatnipView::paintPanel (juce::Graphics&)
         g.setFont (font (xbold, 14.0f).withExtraKerningFactor (0.04f));
         const char* names[] = { "PITCH", "SNAP", "ZOOM", "VOLUME" };
         g.drawText (names[k], juce::Rectangle<float> (a.getX(), a.getY() + 110.0f, a.getWidth(), 18.0f), juce::Justification::centred, false);
+    }
+
+    // COLOR strip: a recessed plate with AGE switch and TONE trim
+    {
+        const juce::Rectangle<float> plate (540.0f, 396.0f, 504.0f, 66.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.55f));
+        g.fillRoundedRectangle (plate.translated (0.0f, 1.0f), 6.0f);
+        g.setColour (juce::Colour (0xff3B342C).withAlpha (0.10f));
+        g.fillRoundedRectangle (plate, 6.0f);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.16f), 0.0f, plate.getY(), juce::Colours::transparentBlack, 0.0f, plate.getY() + 7.0f, false));
+        g.fillRoundedRectangle (plate, 6.0f);
+        g.setColour (ink);
+        g.setFont (font (xbold, 13.0f).withExtraKerningFactor (0.04f));
+        g.drawText ("AGE", juce::Rectangle<float> (550.0f, 421.0f, 36.0f, 16.0f), juce::Justification::centredLeft, false);
+        g.drawText ("TONE", juce::Rectangle<float> (922.0f, 413.0f, 50.0f, 16.0f), juce::Justification::centredLeft, false);
+        g.setColour (juce::Colours::black.withAlpha (0.18f));
+        g.fillRect (912.0f, 406.0f, 1.0f, 46.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.5f));
+        g.fillRect (913.0f, 406.0f, 1.0f, 46.0f);
+
+        g.setColour (juce::Colour (0xff2B2826));
+        const auto tc = knobCentre ((int) Knob::tone);
+        for (int i = 0; i < 11; ++i)
+        {
+            const float ang = juce::degreesToRadians (-135.0f + 27.0f * (float) i);
+            const juce::Point<float> d (std::sin (ang), -std::cos (ang));
+            g.drawLine ({ tc + d * (i % 5 == 0 ? 23.5f : 25.0f), tc + d * 28.0f }, 1.5f);
+        }
+        const auto ac = knobCentre ((int) Knob::age);
+        for (float deg : { -60.0f, -20.0f, 20.0f, 60.0f })
+        {
+            const float ang = juce::degreesToRadians (deg);
+            const juce::Point<float> d (std::sin (ang), -std::cos (ang));
+            g.drawLine ({ ac + d * 23.5f, ac + d * 28.5f }, 2.0f);
+        }
     }
 
     // key labels
@@ -818,8 +908,19 @@ void CatnipView::paintPad (juce::Graphics& g, int vis)
     const int n = proc.getNumChops();
     const int sel = proc.selectedChop.load();
     const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
-    const bool hit = held[(size_t) chop] || flashUntil[(size_t) chop] > now;
+    const double since = now - hitTime[(size_t) chop];
+    const bool hit = held[(size_t) chop] || since < 0.09;
     const bool empty = chop >= n, selected = ! empty && chop == sel;
+
+    // glow: lit from inside on every hit (velocity = brightness), fades in ~0.2 s
+    float glow = held[(size_t) chop] ? juce::jmax (0.8f, proc.hitVelocity[(size_t) chop].load())
+                                     : (since < 0.6 ? proc.hitVelocity[(size_t) chop].load() * (float) std::exp (-since / 0.11) : 0.0f);
+    if (proc.isTapping())
+    {
+        const int next = proc.isFreshPass() ? 0 : n;
+        if (chop == next)   // the pad the next tap fills pulses
+            glow = juce::jmax (glow, 0.18f + 0.22f * (0.5f + 0.5f * (float) std::sin (now * juce::MathConstants<double>::twoPi * 2.2)));
+    }
 
     const auto cell = padCell (vis);
     // label row
@@ -832,6 +933,12 @@ void CatnipView::paintPad (juce::Graphics& g, int vis)
 
     // well
     const auto well = cell.withTrimmedTop (20).toFloat();
+    if (glow > 0.02f)
+    {
+        juce::Path wp;
+        wp.addRoundedRectangle (well, 5.0f);
+        juce::DropShadow (pink.withAlpha (juce::jmin (1.0f, 0.75f * glow)), 18, {}).drawForPath (g, wp);
+    }
     if (selected || hit)
     {
         g.setColour (pink);
@@ -882,32 +989,98 @@ void CatnipView::paintPad (juce::Graphics& g, int vis)
     }, texPad, off, true, 0.6f, 3.0f);
     g.setOpacity (1.0f);
     g.drawImage (img, face);
+
+    // light inside the rubber: faint for pads with a chop, bright on a hit
+    const float base = empty ? 0.0f : 0.06f;
+    const float lit = juce::jmax (base, glow);
+    if (lit > 0.01f)
+    {
+        juce::Path fp;
+        fp.addRoundedRectangle (face, 3.0f);
+        juce::ColourGradient rg (juce::Colour (0xffFF4F96).withAlpha (juce::jmin (1.0f, 0.85f * lit)), face.getCentreX(), face.getCentreY(),
+                                 pink.withAlpha (juce::jmin (1.0f, 0.30f * lit)), face.getX(), face.getY(), true);
+        g.setGradientFill (rg);
+        g.fillPath (fp);
+        if (glow > 0.3f)
+        {
+            g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.22f * (glow - 0.3f)), face.getCentreX(), face.getCentreY(),
+                                                     juce::Colours::transparentWhite, face.getCentreX() + face.getWidth() * 0.42f, face.getCentreY(), true));
+            g.fillPath (fp);
+        }
+    }
+    if (! empty && glow < 0.02f && ! selected)
+    {
+        g.setColour (pink.withAlpha (0.22f));
+        g.drawRoundedRectangle (well.reduced (0.5f), 5.0f, 1.0f);
+    }
 }
 
 void CatnipView::paintKnob (juce::Graphics& g, int k)
 {
-    const auto a = knobCentreArea (k);
-    const juce::Point<float> c (a.getCentreX(), a.getY() + 60.0f);
-    const float R = 42.0f * 0.82f;
+    const auto c = knobCentre (k);
+    const bool small = k >= (int) Knob::tone;
+    const float sc = small ? 0.64f : 1.0f;
+    const float R = 42.0f * 0.82f * sc;
 
     juce::Path disc;
     disc.addEllipse (juce::Rectangle<float> (R * 2.0f, R * 2.0f).withCentre (c));
-    juce::DropShadow (juce::Colours::black.withAlpha (0.4f), 8, { 0, 5 }).drawForPath (g, disc);
+    juce::DropShadow (juce::Colours::black.withAlpha (0.4f), small ? 5 : 8, { 0, small ? 3 : 5 }).drawForPath (g, disc);
 
-    const auto imgRect = juce::Rectangle<float> ((float) knobFace.getWidth() / renderScale, (float) knobFace.getHeight() / renderScale).withCentre (c);
+    const auto imgRect = juce::Rectangle<float> ((float) knobFace.getWidth() / renderScale * sc, (float) knobFace.getHeight() / renderScale * sc).withCentre (c);
     g.setOpacity (1.0f);
     g.drawImage (knobFace, imgRect);
 
-    const float ang = juce::degreesToRadians (-135.0f + 270.0f * knobValue (k));
+    static const float detents[] = { -60.0f, -20.0f, 20.0f, 60.0f };
+    const float deg = k == (int) Knob::age ? detents[juce::jlimit (0, 3, proc.getAge())] : -135.0f + 270.0f * knobValue (k);
+    const float ang = juce::degreesToRadians (deg);
     const juce::Point<float> d (std::sin (ang), -std::cos (ang));
     g.setColour (juce::Colour (0xffF4F4F4));
-    g.drawLine ({ c + d * (11.5f), c + d * ((42.0f - 5.5f) * 0.82f) }, 2.0f * 0.82f + 0.3f);
+    g.drawLine ({ c + d * (11.5f * sc), c + d * ((42.0f - 5.5f) * 0.82f * sc) }, (2.0f * 0.82f + 0.3f) * (small ? 0.9f : 1.0f));
     g.setOpacity (1.0f);
     g.drawImage (knobCap, imgRect);
 
+    if (small) return;
+    const auto a = knobCentreArea (k);
     g.setColour (muted);
     g.setFont (font (semi, 11.0f));
     g.drawText (knobText (k), juce::Rectangle<float> (a.getX() - 10.0f, a.getY() + 129.0f, a.getWidth() + 20.0f, 16.0f), juce::Justification::centred, false);
+}
+
+void CatnipView::paintColorStrip (juce::Graphics& g)
+{
+    // AGE: one LED per mode
+    const int age = proc.getAge();
+    for (int m = 0; m < 4; ++m)
+    {
+        const auto r = ageLabelRect (m);
+        const juce::Rectangle<float> led ((float) r.getCentreX() - 3.5f, 412.0f, 7.0f, 7.0f);
+        if (m == age)
+        {
+            g.setColour (pink.withAlpha (0.35f));
+            g.fillEllipse (led.expanded (4.0f));
+            g.setColour (pink);
+            g.fillEllipse (led);
+            g.setColour (juce::Colours::white.withAlpha (0.6f));
+            g.fillEllipse (led.reduced (2.0f).translated (-0.6f, -0.6f));
+        }
+        else
+        {
+            g.setColour (juce::Colour (0xff3A2A30));
+            g.fillEllipse (led);
+            g.setColour (juce::Colours::black.withAlpha (0.4f));
+            g.drawEllipse (led, 0.8f);
+        }
+        g.setColour (m == age ? pink : ink);
+        g.setFont (font (xbold, 11.0f).withExtraKerningFactor (0.06f));
+        g.drawText (u8 (ageName (m)), juce::Rectangle<int> (r.getX(), 424, r.getWidth(), 16), juce::Justification::centred, false);
+    }
+    // TONE value
+    g.setColour (muted);
+    g.setFont (font (semi, 11.0f));
+    g.drawText (knobText ((int) Knob::tone), juce::Rectangle<float> (922.0f, 431.0f, 58.0f, 14.0f), juce::Justification::centredLeft, false);
+
+    paintKnob (g, (int) Knob::age);
+    paintKnob (g, (int) Knob::tone);
 }
 
 void CatnipView::paintKey (juce::Graphics& g, const KeyInfo& k)
@@ -1004,6 +1177,34 @@ void CatnipView::paintKey (juce::Graphics& g, const KeyInfo& k)
 //==============================================================================
 // display
 
+std::pair<juce::String, juce::String> CatnipView::overlayLines (int k) const
+{
+    const juce::String dot (juce::CharPointer_UTF8 (" \xc2\xb7 "));
+    switch ((Knob) k)
+    {
+        case Knob::pitch:
+        {
+            auto t = knobText (k).upToFirstOccurrenceOf (juce::String (juce::CharPointer_UTF8 (" \xc2\xb7")), false, false).toUpperCase();
+            const double bpm = proc.getPlaybackBpm();
+            juce::String detail = proc.isSynced() ? u8 ("NUR TONHÖHE") + dot + "TEMPO = DAW"
+                                                  : (bpm > 0.0 ? "SAMPLE: " + juce::String (bpm, 1) + " BPM" : juce::String());
+            return { "PITCH " + t, detail };
+        }
+        case Knob::snap:   return { "SNAP " + juce::String (juce::roundToInt (proc.apvts.getRawParameterValue ("snap")->load() * 100.0f)) + " %", u8 ("CHOPS ZUM STÄRKSTEN SCHLAG") };
+        case Knob::zoom:
+        {
+            auto s = proc.getSample();
+            const auto v = proc.getView();
+            const juce::String secs = s != nullptr ? juce::String ((double) v.second / s->sampleRate, 2) + " S SICHTBAR" : juce::String();
+            return { "ZOOM " + knobText (k).toUpperCase(), secs };
+        }
+        case Knob::volume: return { "VOLUME " + knobText (k).toUpperCase(), {} };
+        case Knob::tone:   return { "TONE " + knobText (k).toUpperCase(), "LOW-PASS FILTER" };
+        case Knob::age:    return { "AGE " + u8 (ageName (proc.getAge())), u8 (ageDetail (proc.getAge())) };
+    }
+    return {};
+}
+
 juce::Image CatnipView::renderScreen()
 {
     const auto sr = screenRect();
@@ -1017,6 +1218,19 @@ juce::Image CatnipView::renderScreen()
     g.setColour (lcd);
 
     const juce::Rectangle<float> wave (12.0f, 34.0f, 470.0f, 88.0f);
+    const bool overlayActive = overlayKnob >= 0 && juce::Time::getMillisecondCounterHiRes() * 0.001 < overlayUntil;
+    auto drawOverlay = [&]
+    {
+        // big value readout while turning, like on real hardware
+        const auto lines = overlayLines (overlayKnob);
+        g.setColour (lcd);
+        g.setFont (font (vt, 46.0f));
+        g.drawText (lines.first, juce::Rectangle<float> (0.0f, 40.0f, (float) W, 46.0f), juce::Justification::centred, false);
+        g.setFont (vt19);
+        g.setColour (lcd.withAlpha (0.8f));
+        g.drawText (lines.second, juce::Rectangle<float> (0.0f, 90.0f, (float) W, 20.0f), juce::Justification::centred, false);
+        g.setColour (lcd);
+    };
     const auto tapsNow = proc.getTaps();
     const auto b = proc.getBounds();
     const int n = (int) b.size() > 1 ? (int) b.size() - 1 : 0;
@@ -1030,11 +1244,16 @@ juce::Image CatnipView::renderScreen()
         const auto missing = proc.getMissingFileName();
         g.drawText (missing.isNotEmpty() ? "DATEI FEHLT: " + juce::File (missing).getFileName().toUpperCase() : juce::String ("KEIN SAMPLE"),
                     juce::Rectangle<float> (12.0f, 6.0f, (float) W - 24.0f, 22.0f), juce::Justification::centredLeft, true);
-        g.setFont (font (vt, dragOver ? 34.0f : 30.0f));
-        g.drawText (dragOver ? "LOSLASSEN ZUM LADEN" : "SAMPLE HIER REINZIEHEN", juce::Rectangle<float> (0.0f, 50.0f, (float) W, 34.0f), juce::Justification::centred, false);
-        g.setFont (vt19);
-        g.setColour (lcd.withAlpha (0.7f));
-        g.drawText (u8 ("ODER KLICKEN  \xc2\xb7  WAV AIFF MP3 FLAC"), juce::Rectangle<float> (0.0f, 88.0f, (float) W, 20.0f), juce::Justification::centred, false);
+        if (overlayActive)
+            drawOverlay();
+        else
+        {
+            g.setFont (font (vt, dragOver ? 34.0f : 30.0f));
+            g.drawText (dragOver ? "LOSLASSEN ZUM LADEN" : "SAMPLE HIER REINZIEHEN", juce::Rectangle<float> (0.0f, 50.0f, (float) W, 34.0f), juce::Justification::centred, false);
+            g.setFont (vt19);
+            g.setColour (lcd.withAlpha (0.7f));
+            g.drawText (u8 ("ODER KLICKEN  \xc2\xb7  WAV AIFF MP3 FLAC"), juce::Rectangle<float> (0.0f, 88.0f, (float) W, 20.0f), juce::Justification::centred, false);
+        }
         g.setColour (lcd);
         if (message.isNotEmpty())
         {
@@ -1056,73 +1275,83 @@ juce::Image CatnipView::renderScreen()
     auto px = [&] (juce::int64 s) { return wave.getX() + (float) ((double) (s - view.first) / (double) std::max<juce::int64> (1, view.second)) * wave.getWidth(); };
     auto visible = [&] (juce::int64 s) { return s >= view.first && s <= view.first + view.second; };
 
-    // selected chop
-    if (n > 0 && ! tapping)
-    {
-        const float x0 = juce::jmax (wave.getX(), px (b[(size_t) sel])), x1 = juce::jmin (wave.getRight(), px (b[(size_t) sel + 1]));
-        if (x1 > x0)
-        {
-            g.setColour (pink.withAlpha (0.16f));
-            g.fillRect (x0, wave.getY(), x1 - x0, wave.getHeight());
-        }
-    }
-
-    // waveform bars
-    const auto& pk = viewPeaks (*sample, view.first, view.second);
-    const float bw = wave.getWidth() / (float) pk.size();
-    const float mid = wave.getY() + (wave.getHeight() - 6.0f) / 2.0f + 4.0f;
-    g.setColour (juce::Colour (0xffE8186F));
-    for (size_t i = 0; i < pk.size(); ++i)
-    {
-        const float a = std::max (std::abs (pk[i].first), std::abs (pk[i].second));
-        const float hh = std::max (1.5f, a * (wave.getHeight() - 14.0f) * 0.92f);
-        g.fillRect (wave.getX() + (float) i * bw, mid - hh / 2.0f, bw * 0.55f, hh);
-    }
-
-    // transients (top markers, size = strength)
-    float maxStrength = 1.0e-6f;
-    for (auto& o : sample->analysis.onsetsByTime) maxStrength = std::max (maxStrength, o.strength);
-    g.setColour (juce::Colour (0xffFF3A86).withAlpha (0.7f));
-    for (auto& o : sample->analysis.onsetsByTime)
-    {
-        if (! visible (o.sample)) continue;
-        const float x = px (o.sample), sz = 2.0f + 4.0f * juce::jlimit (0.0f, 1.0f, o.strength / maxStrength);
-        juce::Path tri;
-        tri.addTriangle (x - sz / 2.0f, wave.getY(), x + sz / 2.0f, wave.getY(), x, wave.getY() + sz);
-        g.fillPath (tri);
-    }
-
-    // chops: raw taps (dashed), snap targets (bottom triangles), chop lines + numbers
     const bool fresh = proc.isFreshPass();   // the old chops are replaced by the first tap: show them faded
+    if (overlayActive) drawOverlay();
+    else
     {
-        for (int i = 0; i < n; ++i)
+        // selected chop
+        if (n > 0 && ! tapping)
         {
-            const auto raw = tapsNow.raw[(size_t) i];
-            const auto target = tapsNow.target[(size_t) i];
-            if (snap > 0.0f && visible (raw) && std::abs (px (raw) - px (b[(size_t) i])) > 1.5f)
+            const float x0 = juce::jmax (wave.getX(), px (b[(size_t) sel])), x1 = juce::jmin (wave.getRight(), px (b[(size_t) sel + 1]));
+            if (x1 > x0)
             {
-                g.setColour (juce::Colour (0xffFF3A86).withAlpha (0.45f * (fresh ? 0.3f : 1.0f)));
-                const float x = px (raw);
-                for (float y = wave.getY() + 8.0f; y < wave.getBottom() - 8.0f; y += 4.0f)
-                    g.fillRect (x - 0.5f, y, 1.0f, 2.0f);
+                g.setColour (pink.withAlpha (0.16f));
+                g.fillRect (x0, wave.getY(), x1 - x0, wave.getHeight());
             }
-            if (snap > 0.0f && target >= 0 && visible (target))
+        }
+
+        // waveform bars
+        // the waveform looks like the AGE: clean and fine, or coarse and stepped like an old LCD
+        static const int barsFor[] = { 150, 118, 74, 100 };
+        static const float widthFor[] = { 0.55f, 0.62f, 0.8f, 0.64f };
+        static const float stepFor[] = { 0.0f, 3.0f, 7.0f, 4.0f };
+        const int age = proc.getAge();
+        const auto& pk = viewPeaks (*sample, view.first, view.second, barsFor[age]);
+        const float bw = wave.getWidth() / (float) pk.size();
+        const float mid = wave.getY() + (wave.getHeight() - 6.0f) / 2.0f + 4.0f;
+        g.setColour (juce::Colour (0xffE8186F));
+        for (size_t i = 0; i < pk.size(); ++i)
+        {
+            const float a = std::max (std::abs (pk[i].first), std::abs (pk[i].second));
+            float hh = std::max (1.5f, a * (wave.getHeight() - 14.0f) * 0.92f);
+            if (stepFor[age] > 0.0f) hh = std::max (stepFor[age], std::round (hh / stepFor[age]) * stepFor[age]);
+            g.fillRect (std::round (wave.getX() + (float) i * bw), std::round (mid - hh / 2.0f), std::max (1.0f, std::round (bw * widthFor[age])), hh);
+        }
+
+        // transients (top markers, size = strength)
+        float maxStrength = 1.0e-6f;
+        for (auto& o : sample->analysis.onsetsByTime) maxStrength = std::max (maxStrength, o.strength);
+        g.setColour (juce::Colour (0xffFF3A86).withAlpha (0.7f));
+        for (auto& o : sample->analysis.onsetsByTime)
+        {
+            if (! visible (o.sample)) continue;
+            const float x = px (o.sample), sz = 2.0f + 4.0f * juce::jlimit (0.0f, 1.0f, o.strength / maxStrength);
+            juce::Path tri;
+            tri.addTriangle (x - sz / 2.0f, wave.getY(), x + sz / 2.0f, wave.getY(), x, wave.getY() + sz);
+            g.fillPath (tri);
+        }
+
+        // chops: raw taps (dashed), snap targets (bottom triangles), chop lines + numbers
+        {
+            for (int i = 0; i < n; ++i)
             {
-                const float x = px (target);
-                juce::Path tri;
-                tri.addTriangle (x - 3.0f, wave.getBottom() - 1.0f, x + 3.0f, wave.getBottom() - 1.0f, x, wave.getBottom() - 6.0f);
-                g.setColour (juce::Colour (0xffFFD6E7).withAlpha (fresh ? 0.3f : 1.0f));
-                g.fillPath (tri);
-            }
-            if (visible (b[(size_t) i]))
-            {
-                const float x = px (b[(size_t) i]);
-                const bool hot = i == dragLine || (dragLine < 0 && i == hoverLine);
-                g.setColour ((hot ? juce::Colours::white : juce::Colour (0xffFF6FA6)).withAlpha (fresh ? 0.3f : 1.0f));
-                g.fillRect (x - (hot ? 1.25f : 0.75f), wave.getY() + (hot ? 0.0f : 8.0f), hot ? 2.5f : 1.5f, wave.getHeight() - (hot ? 0.0f : 8.0f));
-                g.setFont (vt13);
-                g.setColour (lcd.withAlpha ((i == sel ? 1.0f : 0.6f) * (fresh ? 0.3f : 1.0f)));
-                g.drawText (two (i + 1), juce::Rectangle<float> (x + 2.0f, wave.getY() - 2.0f, 20.0f, 12.0f), juce::Justification::centredLeft, false);
+                const auto raw = tapsNow.raw[(size_t) i];
+                const auto target = tapsNow.target[(size_t) i];
+                if (snap > 0.0f && visible (raw) && std::abs (px (raw) - px (b[(size_t) i])) > 1.5f)
+                {
+                    g.setColour (juce::Colour (0xffFF3A86).withAlpha (0.45f * (fresh ? 0.3f : 1.0f)));
+                    const float x = px (raw);
+                    for (float y = wave.getY() + 8.0f; y < wave.getBottom() - 8.0f; y += 4.0f)
+                        g.fillRect (x - 0.5f, y, 1.0f, 2.0f);
+                }
+                if (snap > 0.0f && target >= 0 && visible (target))
+                {
+                    const float x = px (target);
+                    juce::Path tri;
+                    tri.addTriangle (x - 3.0f, wave.getBottom() - 1.0f, x + 3.0f, wave.getBottom() - 1.0f, x, wave.getBottom() - 6.0f);
+                    g.setColour (juce::Colour (0xffFFD6E7).withAlpha (fresh ? 0.3f : 1.0f));
+                    g.fillPath (tri);
+                }
+                if (visible (b[(size_t) i]))
+                {
+                    const float x = px (b[(size_t) i]);
+                    const bool hot = i == dragLine || (dragLine < 0 && i == hoverLine);
+                    g.setColour ((hot ? juce::Colours::white : juce::Colour (0xffFF6FA6)).withAlpha (fresh ? 0.3f : 1.0f));
+                    g.fillRect (x - (hot ? 1.25f : 0.75f), wave.getY() + (hot ? 0.0f : 8.0f), hot ? 2.5f : 1.5f, wave.getHeight() - (hot ? 0.0f : 8.0f));
+                    g.setFont (vt13);
+                    g.setColour (lcd.withAlpha ((i == sel ? 1.0f : 0.6f) * (fresh ? 0.3f : 1.0f)));
+                    g.drawText (two (i + 1), juce::Rectangle<float> (x + 2.0f, wave.getY() - 2.0f, 20.0f, 12.0f), juce::Justification::centredLeft, false);
+                }
             }
         }
     }
@@ -1136,7 +1365,8 @@ juce::Image CatnipView::renderScreen()
     else if (tapping) left = "TAP " + juce::String (juce::CharPointer_UTF8 ("L\xc3\x84UFT")) + dot + "ALLES ANDERE STUMM" + dot + juce::String (fresh ? 0 : tapsNow.count) + "/16";
     else if (proc.isPreviewing()) left = juce::String (juce::CharPointer_UTF8 ("> ANH\xc3\x96REN"));
     else if (n == 0) left = u8 ("TAP DRÜCKEN ODER LEERTASTE");
-    else left = juce::String (n) + " CHOPS" + dot + "SNAP " + juce::String (juce::roundToInt (snap * 100.0f)) + "%";
+    else left = juce::String (n) + " CHOPS" + dot + "SNAP " + juce::String (juce::roundToInt (snap * 100.0f)) + "%"
+               + (proc.getAge() != 0 ? dot + u8 (ageName (proc.getAge())) : juce::String());
     if (n > 0)
         rightStatus = "CHOP " + two (sel + 1) + dot + juce::String ((double) b[(size_t) sel] / sample->sampleRate, 2) + "s";
     else
@@ -1164,7 +1394,8 @@ void CatnipView::paintDisplay (juce::Graphics& g)
         const auto t = proc.getTaps();
         for (int i = 0; i < t.count; ++i) sig << t.raw[(size_t) i] << ";";
         sig << "|" << proc.selectedChop.load() << "|" << proc.apvts.getRawParameterValue ("snap")->load() << "|" << bpmLine()
-            << "|" << (int) proc.isTapping() << (int) proc.isFreshPass() << (int) proc.isPreviewing() << "|" << dragLine << "," << hoverLine << "|" << message;
+            << "|" << (int) proc.isTapping() << (int) proc.isFreshPass() << (int) proc.isPreviewing() << "|" << dragLine << "," << hoverLine << "|" << message << "|" << proc.getAge()
+            << "|" << (overlayUntil > juce::Time::getMillisecondCounterHiRes() * 0.001 ? overlayLines (overlayKnob).first + overlayLines (overlayKnob).second : juce::String());
     }
     if (sig != screenSignature || ! screenImage.isValid())
     {
@@ -1211,7 +1442,7 @@ void CatnipView::paintDisplay (juce::Graphics& g)
 
     // play head (drawn live)
     const auto pos = proc.getPreviewPosition();
-    if (pos >= 0)
+    if (pos >= 0 && ! (overlayKnob >= 0 && juce::Time::getMillisecondCounterHiRes() * 0.001 < overlayUntil))
     {
         const auto v = proc.getView();
         if (pos >= v.first && pos <= v.first + v.second)
@@ -1252,7 +1483,7 @@ void CatnipView::mouseMove (const juce::MouseEvent& e)
 
     if (hv >= 0) setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
     else if (knobAt (p) >= 0) setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
-    else if (padAt (p) >= 0 || keyAt (p) != nullptr || (screenRect().contains (p) && proc.getSample() == nullptr))
+    else if (padAt (p) >= 0 || keyAt (p) != nullptr || (p.y >= 408 && p.y < 448 && p.x >= 648 && p.x < 904) || (screenRect().contains (p) && proc.getSample() == nullptr))
         setMouseCursor (juce::MouseCursor::PointingHandCursor);
     else setMouseCursor (juce::MouseCursor::NormalCursor);
 }
@@ -1277,11 +1508,13 @@ void CatnipView::mouseDown (const juce::MouseEvent& e)
     {
         dragKnob = k;
         dragStartValue = knobValue (k);
-        const char* ids[] = { "pitch", "snap", nullptr, "volume" };
+        const char* ids[] = { "pitch", "snap", nullptr, "volume", "tone", nullptr };
         if (ids[k] != nullptr) proc.apvts.getParameter (ids[k])->beginChangeGesture();
         e.source.enableUnboundedMouseMovement (true, true);
         return;
     }
+    for (int m = 0; m < 4; ++m)
+        if (ageLabelRect (m).contains (p)) { setAge (m); return; }
     if (auto* key = keyAt (p))
     {
         pressedKey = key;
@@ -1346,9 +1579,11 @@ void CatnipView::mouseUp (const juce::MouseEvent& e)
     if (mousePad >= 0) { padUp (mousePad); mousePad = -1; }
     if (dragKnob >= 0)
     {
-        const char* ids[] = { "pitch", "snap", nullptr, "volume" };
+        const char* ids[] = { "pitch", "snap", nullptr, "volume", "tone", nullptr };
         if (ids[dragKnob] != nullptr) proc.apvts.getParameter (ids[dragKnob])->endChangeGesture();
         e.source.enableUnboundedMouseMovement (false);
+        if (dragKnob == (int) Knob::age && e.getDistanceFromDragStart() < 3)
+            setAge ((proc.getAge() + 1) % 4);   // a click steps to the next mode
         dragKnob = -1;
     }
     dragLine = -1;
@@ -1382,7 +1617,10 @@ void CatnipView::mouseDoubleClick (const juce::MouseEvent& e)
             case Knob::snap:   { auto* p = proc.apvts.getParameter ("snap"); p->setValueNotifyingHost (p->getDefaultValue()); break; }
             case Knob::zoom:   setZoom (0.0f); break;
             case Knob::volume: { auto* p = proc.apvts.getParameter ("volume"); p->setValueNotifyingHost (p->getDefaultValue()); break; }
+            case Knob::tone:   proc.apvts.getParameter ("tone")->setValueNotifyingHost (1.0f); break;
+            case Knob::age:    setAge (0); return;
         }
+        showOverlay (k);
         repaint();
     }
 }
@@ -1392,10 +1630,14 @@ void CatnipView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWhe
     if (screenRect().contains (e.getPosition()) && proc.getSample() != nullptr)
     {
         setZoom (currentZoom() + (w.deltaY > 0 ? 0.06f : -0.06f));
+        showOverlay ((int) Knob::zoom);
         return;
     }
     if (const int k = knobAt (e.getPosition()); k >= 0)
+    {
+        if (k == (int) Knob::age) { setAge (proc.getAge() + (w.deltaY > 0 ? 1 : -1)); return; }
         setKnobValue (k, knobValue (k) + (w.deltaY > 0 ? 1.0f : -1.0f) / 24.0f, e.mods.isShiftDown());
+    }
 }
 
 //==============================================================================

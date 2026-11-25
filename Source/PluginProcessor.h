@@ -5,6 +5,7 @@
 #include <atomic>
 #include <memory>
 #include "ChopAnalysis.h"
+#include "ColorFx.h"
 
 namespace catnip
 {
@@ -135,6 +136,8 @@ public:
     double getHostBpm() const noexcept { return hostBpm.load(); }   // 0 if the host gives none
     double getPitchSemitones() const noexcept { return pitchParam->load(); }
     bool isSynced() const noexcept { return syncParam->load() > 0.5f; }
+    int getAge() const noexcept { return juce::roundToInt (ageParam->load()); }
+    float getTone() const noexcept { return toneParam->load(); }
     /** Tempo the sample plays at right now (what to set / record in the DAW). */
     double getPlaybackBpm() const;
     /** Source-samples-per-sample factors for tempo and pitch (1 = original). */
@@ -150,6 +153,7 @@ public:
 
     juce::MidiKeyboardState keyboardState;
     std::array<std::atomic<int>, catnip::maxChops> hitCounters {};
+    std::array<std::atomic<float>, catnip::maxChops> hitVelocity {};   // for the pad glow
     std::atomic<int> selectedChop { 0 };
     juce::AudioProcessorValueTreeState apvts;
 
@@ -175,6 +179,7 @@ private:
     std::array<catnip::ChopFlags, catnip::maxChops> flags;
     std::array<catnip::Voice, 8> voices;                 // audio thread: one sounding chop, the rest fade out
     catnip::Voice preview;                               // audio thread
+    catnip::ColorFx color;                               // audio thread
 
     std::atomic<juce::int64> previewRequest { -1 }, previewEnd { 0 }, previewPosition { -1 };
     std::atomic<bool> stopRequest { false }, tapping { false };
@@ -186,6 +191,8 @@ private:
     std::atomic<float>* pitchParam = nullptr;
     std::atomic<float>* snapParam = nullptr;
     std::atomic<float>* syncParam = nullptr;
+    std::atomic<float>* ageParam = nullptr;
+    std::atomic<float>* toneParam = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CatnipProcessor)
 };

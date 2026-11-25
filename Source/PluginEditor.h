@@ -9,7 +9,7 @@ class CatnipView final : public juce::Component,
                          private juce::ChangeListener
 {
 public:
-    static constexpr int width = 1080, height = 700;
+    static constexpr int width = 1080, height = 772;
 
     explicit CatnipView (CatnipProcessor&);
     ~CatnipView() override;
@@ -32,9 +32,11 @@ public:
     void setDragOver (bool);
     void stopEverything();
     void undo();
+    void showKnobOverlayForTest (int knob) { showOverlay (knob); }
 
 private:
-    enum class Knob { pitch = 0, snap, zoom, volume };
+    enum class Knob { pitch = 0, snap, zoom, volume, tone, age };
+    static constexpr int numKnobs = 6;
     enum class Key { reverse = 0, gate, onBeat, sync, toDaw, play, stop, tap, undo, clear, count };
 
     struct KeyInfo { Key id; const char* label; int variant; int icon; juce::Rectangle<int> face; };
@@ -57,6 +59,7 @@ private:
     void paintPanel (juce::Graphics&);
     void paintPad (juce::Graphics&, int visual);
     void paintKnob (juce::Graphics&, int knob);
+    void paintColorStrip (juce::Graphics&);
     void paintKey (juce::Graphics&, const KeyInfo&);
     void paintDisplay (juce::Graphics&);
     juce::Image renderScreen();                                // display contents incl. glow
@@ -77,7 +80,13 @@ private:
     int chopLineAt (float x) const;                            // index of the chop line near x in the wave, or -1
     juce::int64 sampleAtX (float x) const;
     float xForSample (juce::int64 s) const;
-    const std::vector<std::pair<float, float>>& viewPeaks (const catnip::SampleData&, juce::int64 start, juce::int64 length);
+    const std::vector<std::pair<float, float>>& viewPeaks (const catnip::SampleData&, juce::int64 start, juce::int64 length, int bars);
+    static juce::Point<float> knobCentre (int knob);
+    static float knobRadius (int knob);           // grab radius
+    static juce::Rectangle<int> ageLabelRect (int mode);
+    void showOverlay (int knob);
+    std::pair<juce::String, juce::String> overlayLines (int knob) const;
+    void setAge (int mode);
 
     CatnipProcessor& proc;
     juce::Typeface::Ptr vt, reg, semi, xbold;
@@ -89,7 +98,8 @@ private:
 
     std::vector<KeyInfo> keys;
     std::array<int, catnip::maxChops> lastHits {};
-    std::array<double, catnip::maxChops> flashUntil {};
+    std::array<double, catnip::maxChops> hitTime {};
+    bool glowing = false;
     std::array<bool, catnip::maxChops> held {};
 
     // mouse
@@ -103,6 +113,9 @@ private:
     juce::String screenSignature;
     const catnip::SampleData* peaksSample = nullptr;
     juce::int64 peaksStart = -1, peaksLength = -1;
+    int peaksBars = -1;
+    int overlayKnob = -1;
+    double overlayUntil = 0.0;
     std::vector<std::pair<float, float>> peaks;
 
     juce::String message, lastSig;
